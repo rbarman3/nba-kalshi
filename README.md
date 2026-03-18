@@ -1,4 +1,4 @@
-# NBA → Kalshi Betting Pipeline
+# NBA → Kalshi
 
 An automated pipeline that polls live NBA game data, analyzes on-court lineups, and places bets via the [Kalshi](https://kalshi.com) prediction market API.
 
