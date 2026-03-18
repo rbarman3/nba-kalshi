@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nba"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "nba_api>=1.11",
+    "pandas>=2.0",
+    "typer>=0.12",
+    "rich>=13.0",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+nba-scores = "nba.cli:app"
+nba-server = "nba.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=nba --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/nba"]
