@@ -126,7 +126,7 @@ KALSHI_API_KEY_ID=your_key_id_here
 KALSHI_BASE_URL=https://trading-api.kalshi.com/trade-api/v2  # or demo URL
 ```
 
-**Kalshi API docs:** https://trading-api.kalshi.com/trade-api/v2/openapi.json
+**Kalshi API docs:** https://api.elections.kalshi.com/
 
 **Key contracts to implement:**
 
