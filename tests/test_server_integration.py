@@ -30,27 +30,6 @@ class TestScoreboardEndpoint:
             assert field in first, f"Missing field: {field}"
 
 
-class TestLineupEndpoint:
-    def test_invalid_game_id_returns_non_200(self):
-        response = client.get("/lineup/INVALID_ID")
-        assert response.status_code >= 400
-
-    def test_valid_game_id_shape(self):
-        scoreboard = client.get("/scoreboard").json()
-        games = scoreboard["games"]
-        if not games:
-            pytest.skip("No games scheduled today")
-        game_id = games[0]["game_id"]
-        response = client.get(f"/lineup/{game_id}")
-        # Some games may not have started yet; accept 200 or error
-        if response.status_code == 200:
-            data = response.json()
-            assert "home" in data
-            assert "away" in data
-            assert isinstance(data["home"], list)
-            assert isinstance(data["away"], list)
-
-
 class TestPlayersEndpoint:
     def test_search_lebron_returns_players(self):
         response = client.get("/players", params={"name": "LeBron"})

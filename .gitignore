@@ -36,3 +36,9 @@ coverage.xml
 
 # Kalshi secrets (never commit)
 kalshi_credentials.json
+nbakey.txt
+demokey.txt
+
+#Context
+CLAUDE.md
+transportandprocess.md

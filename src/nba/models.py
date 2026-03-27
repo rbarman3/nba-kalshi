@@ -29,16 +29,6 @@ class Player:
 
 
 @dataclass(frozen=True)
-class PlayerOnCourt:
-    name: str
-    jersey_num: str  # stored as str to preserve leading zeros, e.g. "00"
-    position: str
-    points: int
-    assists: int
-    rebounds: int
-
-
-@dataclass(frozen=True)
 class Team:
     id: int
     full_name: str
