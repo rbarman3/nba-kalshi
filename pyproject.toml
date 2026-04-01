@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 nba-scores = "nba.cli:app"
 nba-server = "nba.server:main"
+nba-pipeline = "nba.runner:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -36,6 +37,7 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "--cov=nba --cov=pipeline --cov-report=term-missing"
 asyncio_mode = "strict"
+pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["src/nba", "src/pipeline"]
