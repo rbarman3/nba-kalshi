@@ -33,3 +33,14 @@ class LineupChangeEvent:
     observed_at: float              # Unix timestamp when change detected
 
 
+@dataclass(frozen=True)
+class FeedHealthEvent:
+    """Emitted by FeedWatchdog when feed health status changes.
+
+    game_id=None means overall feed health across all games.
+    """
+    status: str           # "HEALTHY", "DEGRADED", "DEAD"
+    game_id: str | None   # None = overall, str = per-game
+    last_success: float   # Unix timestamp of last successful poll
+    observed_at: float    # Unix timestamp when this event was emitted
+    message: str

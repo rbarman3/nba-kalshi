@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from pipeline.models import RawSnapshot
+from pipeline.store import SnapshotStore
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +84,12 @@ class NBATransport:
         game_ids: list[str],
         queue: asyncio.Queue,
         poll_interval_range: tuple[float, float] = (0.6, 1.2),
+        store: SnapshotStore | None = None,
     ) -> None:
         self.game_ids = game_ids
         self.queue = queue
         self.poll_interval_range = poll_interval_range
+        self.store = store
         self._poll_states: dict[str, _PollState] = {gid: _PollState() for gid in game_ids}
         self.cache: dict[str, RawSnapshot] = {}
 
@@ -140,6 +143,8 @@ class NBATransport:
             )
             self.cache[game_id] = snapshot
             await self.queue.put(snapshot)
+            if self.store:
+                await self.store.persist(snapshot)
 
         except Exception as e:
             logger.error(f"Failed to fetch game {game_id}: {e}")
