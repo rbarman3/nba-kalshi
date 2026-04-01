@@ -19,6 +19,7 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import httpx
 
@@ -128,6 +129,13 @@ class NBATransport:
 
             if game_status == 3:
                 state.status = GameStatus.FINAL
+                if self.store:
+                    date_str = datetime.now().strftime("%Y-%m-%d")
+                    try:
+                        await self.store.compact(game_id, date_str)
+                        logger.info(f"Compacted snapshots for game {game_id}")
+                    except Exception as e:
+                        logger.error(f"Compact failed for {game_id}: {e}")
                 return
 
             state.status = GameStatus.LIVE

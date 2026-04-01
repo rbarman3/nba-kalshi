@@ -11,7 +11,7 @@ NBA Live API  ──►  Lineup Polling  ──►  Signal Analysis  ──►  
 
 The system runs in two stages:
 
-1. **NBA side (built)** — continuously polls live scoreboard and per-game lineups via `nba_api`, exposes data through a FastAPI HTTP server and a Typer CLI.
+1. **NBA side (built)** — continuously polls live scoreboard and per-game lineups via `nba_api`, exposes data through a FastAPI HTTP server.
 2. **Kalshi side (in progress)** — consumes lineup signals, finds matching NBA markets on Kalshi, and places/manages orders.
 
 ---
@@ -25,8 +25,6 @@ src/
     live_service.py   # get_live_scoreboard(), get_live_lineup(game_id)
     player_service.py # find_players_by_name(), find_players_by_team()
     server.py         # FastAPI app (4 HTTP endpoints) + uvicorn entry point
-    cli.py            # Typer CLI: scores, lineup, watch
-    poller.py         # Background daemon thread used by `watch`
 
   kalshi/           # Kalshi API integration — SEE CONTRIBUTING BELOW
     models.py         # Kalshi market, contract, order dataclasses
@@ -42,10 +40,7 @@ tests/
   test_player_service.py                  # Unit — player lookup (mocked)
   test_roster_helper.py                   # Unit — _get_roster_for_team (mocked)
   test_live_service.py                    # Unit — scoreboard/lineup parsing (mocked)
-  test_poller.py                          # Unit — Poller class
-  test_cli.py                             # Unit — CLI commands (mocked)
   test_player_to_service_integration.py   # Integration — player service vs real API
-  test_cli_integration.py                 # Integration — CLI via CliRunner
   test_server_integration.py             # Integration — HTTP endpoints vs real NBA API
   kalshi/                                 # Kalshi test suite (to be added)
   analysis/                               # Analysis test suite (to be added)
@@ -59,14 +54,6 @@ tests/
 
 ```bash
 pip install -e ".[dev]"
-```
-
-### CLI
-
-```bash
-nba-scores scores                        # Today's live scoreboard
-nba-scores lineup <game_id>             # On-court players for a game
-nba-scores watch [game_id] [--interval 30]  # Auto-refresh lineup
 ```
 
 ### HTTP Server
@@ -93,7 +80,7 @@ OpenAPI docs at `http://localhost:8000/docs`.
 PYTHONPATH=src python3 -m pytest
 
 # Integration tests only (requires network)
-PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_player_to_service_integration.py tests/test_cli_integration.py -v
+PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_player_to_service_integration.py -v
 ```
 
 ---
@@ -137,27 +124,6 @@ KALSHI_BASE_URL=https://trading-api.kalshi.com/trade-api/v2  # or demo URL
 
 ---
 
-## End-to-End Data Flow
-
-```
-Poller (30s interval)
-  └─► get_live_lineup(game_id)          # src/nba/live_service.py
-        │
-        ▼
-  generate_signals(home, away)          # src/analysis/signals.py
-        │  returns list[BettingSignal]
-        ▼
-  find_nba_markets(game_id)            # src/kalshi/markets.py
-        │  returns matching tickers
-        ▼
-  place_order(signal, ticker)          # src/kalshi/orders.py
-        │
-        ▼
-  Kalshi order confirmation
-```
-
----
-
 ## Mock Targets (for contributors)
 
 When writing unit tests, patch at the **module level** where the name is used:
@@ -170,5 +136,4 @@ When writing unit tests, patch at the **module level** where the name is used:
 | `CommonTeamRoster` | `nba.player_service.commonteamroster.CommonTeamRoster` |
 | `ScoreBoard` | `nba.live_service.live_scoreboard.ScoreBoard` |
 | `BoxScore` | `nba.live_service.live_boxscore.BoxScore` |
-| CLI service calls | `nba.cli.get_live_scoreboard`, `nba.cli.get_live_lineup` |
 | Kalshi HTTP calls | `kalshi.client.KalshiClient.get`, `kalshi.client.KalshiClient.post` |

@@ -1,4 +1,4 @@
-"""Tests for pipeline.store — snapshot persistence to JSONL."""
+"""Tests for pipeline.store — snapshot persistence (JSONL + Parquet)."""
 import json
 import tempfile
 from pathlib import Path
@@ -32,11 +32,28 @@ def snapshot():
     )
 
 
+# ------------------------------------------------------------------
+# Path generation
+# ------------------------------------------------------------------
+
+
 class TestPathGeneration:
     def test_path_structure(self, store, temp_store_dir):
         """_path returns base_dir/YYYY-MM-DD/game_id.jsonl"""
         path = store._path("0022500001", "2026-03-29")
         assert path == temp_store_dir / "2026-03-29" / "0022500001.jsonl"
+
+
+class TestParquetPath:
+    def test_parquet_path_structure(self, store, temp_store_dir):
+        """_parquet_path returns base_dir/YYYY-MM-DD/game_id.parquet"""
+        path = store._parquet_path("0022500001", "2026-03-29")
+        assert path == temp_store_dir / "2026-03-29" / "0022500001.parquet"
+
+
+# ------------------------------------------------------------------
+# JSONL persist (unchanged behavior)
+# ------------------------------------------------------------------
 
 
 class TestPersist:
@@ -81,6 +98,11 @@ class TestPersist:
         path = temp_store_dir / "2026-03-29" / "game1.jsonl"
         data = json.loads(path.read_text())
         assert data["payload"] == payload
+
+
+# ------------------------------------------------------------------
+# JSONL load (unchanged behavior)
+# ------------------------------------------------------------------
 
 
 class TestLoad:
@@ -139,3 +161,136 @@ class TestLoad:
 
         loaded = store.load("game1", date)
         assert [s.payload["i"] for s in loaded] == [0, 1, 2]
+
+
+# ------------------------------------------------------------------
+# Compaction — JSONL → Parquet
+# ------------------------------------------------------------------
+
+
+class TestCompact:
+    @pytest.mark.asyncio
+    async def test_compact_creates_parquet_file(self, store, temp_store_dir):
+        """compact() produces a .parquet file."""
+        snap = RawSnapshot(game_id="game1", payload={"a": 1}, fetched_at=1000.0)
+        await store.persist(snap, date="2026-03-29")
+
+        path = await store.compact("game1", "2026-03-29")
+        assert path.suffix == ".parquet"
+        assert path.exists()
+
+    @pytest.mark.asyncio
+    async def test_compact_removes_jsonl(self, store, temp_store_dir):
+        """compact() deletes the source JSONL file."""
+        snap = RawSnapshot(game_id="game1", payload={"a": 1}, fetched_at=1000.0)
+        await store.persist(snap, date="2026-03-29")
+
+        jsonl_path = store._path("game1", "2026-03-29")
+        assert jsonl_path.exists()
+
+        await store.compact("game1", "2026-03-29")
+        assert not jsonl_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_compact_round_trip(self, store):
+        """compact() preserves all fields through JSONL → Parquet → load."""
+        payload = {"game": {"homeTeam": {"score": 110}, "gameStatus": 2}}
+        snap = RawSnapshot(game_id="game1", payload=payload, fetched_at=1234.5)
+        await store.persist(snap, date="2026-03-29")
+
+        await store.compact("game1", "2026-03-29")
+
+        loaded = store.load("game1", "2026-03-29")
+        assert len(loaded) == 1
+        assert loaded[0].game_id == "game1"
+        assert loaded[0].payload == payload
+        assert loaded[0].fetched_at == 1234.5
+
+    @pytest.mark.asyncio
+    async def test_compact_preserves_order(self, store):
+        """compact() maintains insertion order."""
+        for i in range(5):
+            snap = RawSnapshot(
+                game_id="game1",
+                payload={"seq": i},
+                fetched_at=1000.0 + i,
+            )
+            await store.persist(snap, date="2026-03-29")
+
+        await store.compact("game1", "2026-03-29")
+        loaded = store.load("game1", "2026-03-29")
+
+        assert [s.payload["seq"] for s in loaded] == [0, 1, 2, 3, 4]
+        assert [s.fetched_at for s in loaded] == [1000.0, 1001.0, 1002.0, 1003.0, 1004.0]
+
+    @pytest.mark.asyncio
+    async def test_compact_missing_file_raises(self, store):
+        """compact() raises FileNotFoundError when no JSONL exists."""
+        with pytest.raises(FileNotFoundError):
+            await store.compact("nonexistent", "2026-03-29")
+
+    @pytest.mark.asyncio
+    async def test_compact_empty_file_raises(self, store, temp_store_dir):
+        """compact() raises ValueError when JSONL is empty."""
+        date = "2026-03-29"
+        path = store._path("game1", date)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+
+        with pytest.raises(ValueError):
+            await store.compact("game1", date)
+
+
+# ------------------------------------------------------------------
+# Dual-format loading — Parquet preferred over JSONL
+# ------------------------------------------------------------------
+
+
+class TestLoadDualFormat:
+    @pytest.mark.asyncio
+    async def test_load_prefers_parquet(self, store, temp_store_dir):
+        """load() returns parquet data when both formats exist."""
+        date = "2026-03-29"
+
+        # Write JSONL with payload_a
+        snap_jsonl = RawSnapshot(game_id="game1", payload={"src": "jsonl"}, fetched_at=1.0)
+        await store.persist(snap_jsonl, date=date)
+
+        # Write a different parquet file with payload_b
+        snap_pq = RawSnapshot(game_id="game1", payload={"src": "parquet"}, fetched_at=2.0)
+        await store.persist(snap_pq, date=date)  # adds second line to JSONL
+
+        # Compact creates parquet from both lines
+        await store.compact("game1", date)
+
+        # Re-create JSONL with different data to prove parquet wins
+        snap_new = RawSnapshot(game_id="game1", payload={"src": "new_jsonl"}, fetched_at=3.0)
+        await store.persist(snap_new, date=date)
+
+        loaded = store.load("game1", date)
+        # Should get the 2 parquet rows, NOT the 1 new JSONL row
+        assert len(loaded) == 2
+        assert loaded[0].payload == {"src": "jsonl"}
+        assert loaded[1].payload == {"src": "parquet"}
+
+    @pytest.mark.asyncio
+    async def test_load_falls_back_to_jsonl(self, store):
+        """load() reads JSONL when no parquet file exists."""
+        snap = RawSnapshot(game_id="game1", payload={"fmt": "jsonl"}, fetched_at=1.0)
+        await store.persist(snap, date="2026-03-29")
+
+        loaded = store.load("game1", "2026-03-29")
+        assert len(loaded) == 1
+        assert loaded[0].payload == {"fmt": "jsonl"}
+
+    @pytest.mark.asyncio
+    async def test_parquet_payload_is_dict(self, store):
+        """After compact, load() returns payload as dict, not string."""
+        payload = {"game": {"nested": {"deep": True}}}
+        snap = RawSnapshot(game_id="game1", payload=payload, fetched_at=1.0)
+        await store.persist(snap, date="2026-03-29")
+        await store.compact("game1", "2026-03-29")
+
+        loaded = store.load("game1", "2026-03-29")
+        assert isinstance(loaded[0].payload, dict)
+        assert loaded[0].payload == payload
