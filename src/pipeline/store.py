@@ -1,4 +1,13 @@
-"""Snapshot persistence — JSONL ingestion + Parquet compaction."""
+"""Snapshot persistence — JSONL ingestion + Parquet compaction.
+
+Directory layout:
+    base_dir/{season}/{game_type}/{date}/{game_id}.jsonl   (live)
+    base_dir/{season}/{game_type}/{date}/{game_id}.parquet (compacted)
+
+Season and game type are parsed from the NBA game ID:
+    Positions [0:3]  → game type code (002=regular, 004=playoffs, etc.)
+    Positions [3:5]  → season start year (25 → 2025-26)
+"""
 import asyncio
 import json
 import threading
@@ -16,24 +25,66 @@ _PARQUET_SCHEMA = pa.schema([
     ("fetched_at", pa.float64()),
 ])
 
+_GAME_TYPE_CODES = {
+    "001": "preseason",
+    "002": "regular",
+    "003": "allstar",
+    "004": "playoffs",
+    "005": "playin",
+}
+
+
+def parse_game_id(game_id: str) -> tuple[str, str]:
+    """Extract season and game type from an NBA game ID.
+
+    Args:
+        game_id: 10-character NBA game ID (e.g. "0022500001").
+
+    Returns:
+        (season, game_type) tuple, e.g. ("2025-26", "regular").
+
+    Raises:
+        ValueError: If game_id is too short or has unknown type code.
+    """
+    if len(game_id) < 5:
+        raise ValueError(f"Game ID too short: {game_id!r}")
+
+    type_code = game_id[:3]
+    game_type = _GAME_TYPE_CODES.get(type_code)
+    if game_type is None:
+        raise ValueError(f"Unknown game type code {type_code!r} in {game_id!r}")
+
+    start_year = int(game_id[3:5])
+    season = f"20{start_year:02d}-{start_year + 1:02d}"
+
+    return season, game_type
+
 
 class SnapshotStore:
-    """Persists RawSnapshot objects to JSONL files, compacts to Parquet."""
+    """Persists RawSnapshot objects to JSONL files, compacts to Parquet.
+
+    Path structure: base_dir/{season}/{game_type}/{date}/{game_id}.ext
+    """
 
     def __init__(self, base_dir: str | Path = "data/snapshots") -> None:
         self.base_dir = Path(base_dir)
         self._lock = threading.Lock()
 
+    def _dir(self, game_id: str, date: str) -> Path:
+        """Return the directory for a game's snapshot files."""
+        season, game_type = parse_game_id(game_id)
+        return self.base_dir / season / game_type / date
+
     def _path(self, game_id: str, date: str) -> Path:
-        """JSONL path: base_dir/{date}/{game_id}.jsonl"""
-        return self.base_dir / date / f"{game_id}.jsonl"
+        """JSONL path: base_dir/{season}/{game_type}/{date}/{game_id}.jsonl"""
+        return self._dir(game_id, date) / f"{game_id}.jsonl"
 
     def _parquet_path(self, game_id: str, date: str) -> Path:
-        """Parquet path: base_dir/{date}/{game_id}.parquet"""
-        return self.base_dir / date / f"{game_id}.parquet"
+        """Parquet path: base_dir/{season}/{game_type}/{date}/{game_id}.parquet"""
+        return self._dir(game_id, date) / f"{game_id}.parquet"
 
     # ------------------------------------------------------------------
-    # Live ingestion (unchanged)
+    # Live ingestion
     # ------------------------------------------------------------------
 
     async def persist(self, snapshot: RawSnapshot, date: str | None = None) -> None:
@@ -62,9 +113,6 @@ class SnapshotStore:
 
     async def compact(self, game_id: str, date: str) -> Path:
         """Convert a game's JSONL file to Parquet with zstd compression.
-
-        Reads all snapshots from JSONL, writes a single Parquet file,
-        then removes the source JSONL.
 
         Raises:
             FileNotFoundError: No JSONL file for this game/date.
@@ -128,6 +176,87 @@ class SnapshotStore:
             )
             for gid, p, ts in zip(d["game_id"], d["payload"], d["fetched_at"])
         ]
+
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
+
+    def list_games(self, date: str, season: str | None = None,
+                   game_type: str | None = None) -> list[str]:
+        """Return game IDs available for a given date.
+
+        Args:
+            date: Date string YYYY-MM-DD.
+            season: Filter to season (e.g. "2025-26"). If None, searches all.
+            game_type: Filter to type (e.g. "regular"). If None, searches all.
+
+        Returns:
+            Sorted, deduplicated list of game IDs.
+        """
+        game_ids: set[str] = set()
+
+        if season and game_type:
+            # Fast path: exact directory
+            date_dir = self.base_dir / season / game_type / date
+            self._scan_dir(date_dir, game_ids)
+        else:
+            # Scan matching directories
+            if not self.base_dir.exists():
+                return []
+            for season_dir in sorted(self.base_dir.iterdir()):
+                if not season_dir.is_dir():
+                    continue
+                if season and season_dir.name != season:
+                    continue
+                for type_dir in sorted(season_dir.iterdir()):
+                    if not type_dir.is_dir():
+                        continue
+                    if game_type and type_dir.name != game_type:
+                        continue
+                    date_dir = type_dir / date
+                    self._scan_dir(date_dir, game_ids)
+
+        return sorted(game_ids)
+
+    def list_dates(self, season: str | None = None,
+                   game_type: str | None = None) -> list[str]:
+        """Return all dates that have stored snapshots.
+
+        Args:
+            season: Filter to season. If None, searches all.
+            game_type: Filter to type. If None, searches all.
+
+        Returns:
+            Sorted list of date strings (YYYY-MM-DD).
+        """
+        dates: set[str] = set()
+
+        if not self.base_dir.exists():
+            return []
+
+        for season_dir in sorted(self.base_dir.iterdir()):
+            if not season_dir.is_dir():
+                continue
+            if season and season_dir.name != season:
+                continue
+            for type_dir in sorted(season_dir.iterdir()):
+                if not type_dir.is_dir():
+                    continue
+                if game_type and type_dir.name != game_type:
+                    continue
+                for date_dir in sorted(type_dir.iterdir()):
+                    if date_dir.is_dir():
+                        dates.add(date_dir.name)
+
+        return sorted(dates)
+
+    @staticmethod
+    def _scan_dir(date_dir: Path, game_ids: set[str]) -> None:
+        if not date_dir.exists():
+            return
+        for path in date_dir.iterdir():
+            if path.suffix in (".parquet", ".jsonl"):
+                game_ids.add(path.stem)
 
     def _load_jsonl(self, path: Path) -> list[RawSnapshot]:
         snapshots = []
