@@ -1,7 +1,7 @@
-"""Tests for pipeline.processor — lineup diffing logic."""
+"""Tests for pipeline.processor — lineup diffing and score change detection."""
 import pytest
-from src.pipeline.models import RawSnapshot, LineupChangeEvent
-from src.pipeline.processor import extract_lineup, diff_lineups
+from src.pipeline.models import RawSnapshot, LineupChangeEvent, ScoreChangeEvent
+from src.pipeline.processor import extract_lineup, diff_lineups, extract_scores, diff_scores
 
 
 @pytest.fixture
@@ -13,6 +13,7 @@ def base_payload():
             "period": 1,
             "gameClock": "PT05M32.00S",
             "homeTeam": {
+                "score": 0,
                 "players": [
                     {"personId": "201939", "oncourt": "1"},  # on court
                     {"personId": "2544", "oncourt": "0"},    # on bench
@@ -20,6 +21,7 @@ def base_payload():
                 ]
             },
             "awayTeam": {
+                "score": 0,
                 "players": [
                     {"personId": "2544", "oncourt": "1"},    # on court
                     {"personId": "201950", "oncourt": "1"},  # on court
@@ -214,3 +216,139 @@ class TestDiffLineups:
         )
         with pytest.raises(AttributeError):
             event.period = 2  # type: ignore
+
+
+class TestExtractScores:
+    """Tests for extract_scores()."""
+
+    def test_returns_dict_with_home_away(self, snapshot):
+        """extract_scores returns dict with 'home' and 'away' keys."""
+        result = extract_scores(snapshot)
+        assert isinstance(result, dict)
+        assert "home" in result
+        assert "away" in result
+
+    def test_extracts_scores_correctly(self, base_payload, snapshot):
+        """extract_scores reads homeTeam.score and awayTeam.score."""
+        base_payload["game"]["homeTeam"]["score"] = 55
+        base_payload["game"]["awayTeam"]["score"] = 48
+        result = extract_scores(snapshot)
+        assert result["home"] == 55
+        assert result["away"] == 48
+
+    def test_defaults_to_zero_when_missing(self):
+        """extract_scores defaults to 0 when score field missing."""
+        payload = {
+            "game": {
+                "homeTeam": {"players": []},
+                "awayTeam": {"players": []},
+            }
+        }
+        snapshot = RawSnapshot(
+            game_id="0022500001",
+            payload=payload,
+            fetched_at=1000.0,
+        )
+        result = extract_scores(snapshot)
+        assert result["home"] == 0
+        assert result["away"] == 0
+
+
+class TestDiffScores:
+    """Tests for diff_scores()."""
+
+    def test_no_change_returns_none(self, snapshot):
+        """diff_scores returns None when scores unchanged."""
+        scores = extract_scores(snapshot)
+        event = diff_scores(
+            game_id="0022500001",
+            prev_scores=scores,
+            curr_scores=scores,
+            snapshot=snapshot,
+        )
+        assert event is None
+
+    def test_home_score_change(self, base_payload, snapshot):
+        """diff_scores detects home score change."""
+        prev_scores = {"home": 50, "away": 48}
+        base_payload["game"]["homeTeam"]["score"] = 55
+        base_payload["game"]["awayTeam"]["score"] = 48
+        curr_scores = extract_scores(snapshot)
+
+        event = diff_scores(
+            game_id="0022500001",
+            prev_scores=prev_scores,
+            curr_scores=curr_scores,
+            snapshot=snapshot,
+        )
+        assert event is not None
+        assert event.home_score == 55
+        assert event.home_prev == 50
+        assert event.away_score == 48
+        assert event.away_prev == 48
+
+    def test_away_score_change(self, base_payload, snapshot):
+        """diff_scores detects away score change."""
+        prev_scores = {"home": 50, "away": 48}
+        base_payload["game"]["homeTeam"]["score"] = 50
+        base_payload["game"]["awayTeam"]["score"] = 52
+        curr_scores = extract_scores(snapshot)
+
+        event = diff_scores(
+            game_id="0022500001",
+            prev_scores=prev_scores,
+            curr_scores=curr_scores,
+            snapshot=snapshot,
+        )
+        assert event is not None
+        assert event.away_score == 52
+        assert event.away_prev == 48
+
+    def test_both_scores_change(self, base_payload, snapshot):
+        """diff_scores detects both scores changing."""
+        prev_scores = {"home": 50, "away": 48}
+        base_payload["game"]["homeTeam"]["score"] = 52
+        base_payload["game"]["awayTeam"]["score"] = 50
+        curr_scores = extract_scores(snapshot)
+
+        event = diff_scores(
+            game_id="0022500001",
+            prev_scores=prev_scores,
+            curr_scores=curr_scores,
+            snapshot=snapshot,
+        )
+        assert event is not None
+        assert event.home_score == 52
+        assert event.away_score == 50
+
+    def test_event_is_frozen(self, base_payload, snapshot):
+        """ScoreChangeEvent is immutable."""
+        prev_scores = {"home": 50, "away": 48}
+        base_payload["game"]["homeTeam"]["score"] = 55
+        curr_scores = extract_scores(snapshot)
+
+        event = diff_scores(
+            game_id="0022500001",
+            prev_scores=prev_scores,
+            curr_scores=curr_scores,
+            snapshot=snapshot,
+        )
+        with pytest.raises(AttributeError):
+            event.home_score = 60  # type: ignore
+
+    def test_event_contains_correct_metadata(self, base_payload, snapshot):
+        """diff_scores includes period, clock, game_id, timestamp."""
+        prev_scores = {"home": 50, "away": 48}
+        base_payload["game"]["homeTeam"]["score"] = 55
+        curr_scores = extract_scores(snapshot)
+
+        event = diff_scores(
+            game_id="0022500001",
+            prev_scores=prev_scores,
+            curr_scores=curr_scores,
+            snapshot=snapshot,
+        )
+        assert event.game_id == "0022500001"
+        assert event.period == 1
+        assert event.clock == "PT05M32.00S"
+        assert event.observed_at == 1000.0

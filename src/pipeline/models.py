@@ -33,3 +33,19 @@ class LineupChangeEvent:
     observed_at: float              # Unix timestamp when change detected
 
 
+@dataclass(frozen=True)
+class ScoreChangeEvent:
+    """Emitted when the score changes between consecutive snapshots.
+
+    Emitted by NBAProcessor when either team's score changes.
+    """
+    game_id: str
+    home_score: int                 # Current home team score
+    away_score: int                 # Current away team score
+    home_prev: int                  # Previous home team score
+    away_prev: int                  # Previous away team score
+    period: int                     # Current period
+    clock: str                      # ISO 8601 time remaining in period
+    observed_at: float              # Unix timestamp when change detected
+
+
