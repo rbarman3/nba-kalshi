@@ -273,3 +273,171 @@ class TestReplayTiming:
 
         assert result.duration_seconds >= 0
         assert result.duration_seconds < 1.0
+
+
+# ------------------------------------------------------------------
+# stream_game — async generator (anti-look-ahead)
+# ------------------------------------------------------------------
+
+
+class TestStreamGame:
+    """Test async generator that yields events one at a time."""
+
+    @pytest.mark.asyncio
+    async def test_stream_yields_events_individually(self):
+        """stream_snapshots yields one event at a time, not a batch."""
+        replayer = SnapshotReplayer(store=None, mode="fast")
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p6"], fetched_at=1002.0),
+        ]
+        events = []
+        async for event in replayer.stream_snapshots(snapshots):
+            events.append(event)
+
+        assert len(events) == 2
+        assert isinstance(events[0], LineupChangeEvent)
+        assert isinstance(events[1], LineupChangeEvent)
+
+    @pytest.mark.asyncio
+    async def test_stream_no_events_yields_nothing(self):
+        """stream_snapshots yields nothing when no changes occur."""
+        replayer = SnapshotReplayer(store=None, mode="fast")
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1001.0),
+        ]
+        events = [e async for e in replayer.stream_snapshots(snapshots)]
+
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_stream_empty_snapshots(self):
+        """stream_snapshots handles empty input."""
+        replayer = SnapshotReplayer(store=None, mode="fast")
+        events = [e async for e in replayer.stream_snapshots([])]
+
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_stream_prevents_look_ahead(self):
+        """Events are yielded as they occur — consumer can't see future events."""
+        replayer = SnapshotReplayer(store=None, mode="fast")
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p6"], fetched_at=1002.0),
+        ]
+        seen_at_yield = []
+        total_so_far = 0
+        async for event in replayer.stream_snapshots(snapshots):
+            total_so_far += 1
+            seen_at_yield.append(total_so_far)
+
+        # Each event was yielded individually — first yield saw 1, second saw 2
+        assert seen_at_yield == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_stream_game_loads_from_store(self, temp_store):
+        """stream_game loads from store and yields events."""
+        snap1 = make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0)
+        snap2 = make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0)
+        await temp_store.persist(snap1, date=DATE)
+        await temp_store.persist(snap2, date=DATE)
+
+        replayer = SnapshotReplayer(store=temp_store, mode="fast")
+        events = [e async for e in replayer.stream_game(GAME_ID, DATE)]
+
+        assert len(events) == 1
+        assert isinstance(events[0], LineupChangeEvent)
+
+    @pytest.mark.asyncio
+    async def test_stream_realtime_respects_timing(self):
+        """stream_snapshots in realtime mode paces by fetched_at."""
+        replayer = SnapshotReplayer(store=None, mode="realtime")
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1000.1),
+        ]
+
+        start = time.monotonic()
+        events = [e async for e in replayer.stream_snapshots(snapshots)]
+        elapsed = time.monotonic() - start
+
+        assert len(events) == 1
+        assert elapsed >= 0.08
+
+
+# ------------------------------------------------------------------
+# signal_delay — latency bias correction
+# ------------------------------------------------------------------
+
+
+class TestSignalDelay:
+    """Test signal_delay offsets observed_at on emitted events."""
+
+    @pytest.mark.asyncio
+    async def test_signal_delay_offsets_observed_at(self):
+        """Events have observed_at shifted forward by signal_delay."""
+        replayer = SnapshotReplayer(store=None, mode="fast", signal_delay=2.5)
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+        ]
+        result = await replayer.replay_snapshots(snapshots)
+
+        assert len(result.events) == 1
+        # observed_at should be fetched_at + signal_delay
+        assert result.events[0].observed_at == 1001.0 + 2.5
+
+    @pytest.mark.asyncio
+    async def test_zero_delay_preserves_original(self):
+        """signal_delay=0 leaves observed_at unchanged."""
+        replayer = SnapshotReplayer(store=None, mode="fast", signal_delay=0.0)
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+        ]
+        result = await replayer.replay_snapshots(snapshots)
+
+        assert result.events[0].observed_at == 1001.0
+
+    @pytest.mark.asyncio
+    async def test_default_delay_is_zero(self):
+        """Default signal_delay is 0 — no offset."""
+        replayer = SnapshotReplayer(store=None, mode="fast")
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+        ]
+        result = await replayer.replay_snapshots(snapshots)
+
+        assert result.events[0].observed_at == 1001.0
+
+    @pytest.mark.asyncio
+    async def test_signal_delay_applies_to_stream(self):
+        """signal_delay also applies in streaming mode."""
+        replayer = SnapshotReplayer(store=None, mode="fast", signal_delay=3.0)
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+        ]
+        events = [e async for e in replayer.stream_snapshots(snapshots)]
+
+        assert len(events) == 1
+        assert events[0].observed_at == 1001.0 + 3.0
+
+    @pytest.mark.asyncio
+    async def test_signal_delay_multiple_events(self):
+        """Each event gets its own offset based on its own fetched_at."""
+        replayer = SnapshotReplayer(store=None, mode="fast", signal_delay=1.0)
+        snapshots = [
+            make_snapshot(GAME_ID, ["p1", "p2"], ["p3", "p4"], fetched_at=1000.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p4"], fetched_at=1001.0),
+            make_snapshot(GAME_ID, ["p1", "p5"], ["p3", "p6"], fetched_at=1002.0),
+        ]
+        result = await replayer.replay_snapshots(snapshots)
+
+        assert result.events[0].observed_at == 1002.0
+        assert result.events[1].observed_at == 1003.0

@@ -5,6 +5,7 @@ Usage:
     nba-replay 2026-03-29 --game 0022500001
     nba-replay 2026-03-29 --mode realtime
     nba-replay 2026-03-29 --store-dir data/snapshots
+    nba-replay 2026-03-29 --signal-delay 3.0
 """
 import asyncio
 import logging
@@ -82,6 +83,7 @@ def replay(
     game: str = typer.Option(None, "--game", "-g", help="Replay a single game ID."),
     mode: str = typer.Option("fast", "--mode", "-m", help="Replay mode: fast or realtime."),
     store_dir: str = typer.Option("data/snapshots", "--store-dir", "-d", help="Snapshot store directory."),
+    signal_delay: float = typer.Option(0.0, "--signal-delay", "-s", help="Seconds to add to event observed_at (latency simulation)."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show individual events."),
 ) -> None:
     """Replay stored snapshots for a given date."""
@@ -91,7 +93,7 @@ def replay(
     )
 
     store = SnapshotStore(base_dir=store_dir)
-    replayer = SnapshotReplayer(store=store, mode=mode)
+    replayer = SnapshotReplayer(store=store, mode=mode, signal_delay=signal_delay)
 
     if game:
         console.print(f"Replaying game [bold]{game}[/bold] on {date} ({mode} mode)")
