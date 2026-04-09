@@ -1,8 +1,13 @@
-"""Trading pipeline for Kalshi NBA in-game contracts.
+"""NBA data pipeline for live and historical game analysis.
 
-Layers:
+Core pipeline (NBA CDN):
   1. transport.py — Poll NBA CDN for raw snapshots
-  2. processor.py — Diff snapshots, emit lineup changes (future)
-  3. strategy.py — Signal logic: target players in/out (future)
-  4. execution.py — Kalshi order placement (future)
+  2. processor.py — Diff snapshots, emit lineup/score changes
+
+ESPN scraper (independent tool):
+  1. espn_id_map.py — Discover ESPN game IDs via scoreboard API
+  2. espn_transport.py — Fetch historical play-by-play data
+  3. espn_processor.py — Classify plays into typed events
+  4. espn_store.py — Persist raw + processed data as JSONL
+  5. espn_cli.py — CLI entry point (nba-espn)
 """

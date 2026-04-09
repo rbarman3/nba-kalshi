@@ -1,0 +1,130 @@
+{
+  "leagues": [
+    {
+      "id": "46",
+      "abbreviation": "NBA"
+    }
+  ],
+  "events": [
+    {
+      "id": "401584793",
+      "name": "Boston Celtics at Los Angeles Lakers",
+      "shortName": "BOS @ LAL",
+      "competitions": [
+        {
+          "id": "401584793",
+          "status": {
+            "type": {
+              "id": "2",
+              "name": "STATUS_IN_PROGRESS",
+              "state": "in",
+              "completed": false
+            }
+          },
+          "competitors": [
+            {
+              "id": "13",
+              "homeAway": "home",
+              "team": {
+                "id": "13",
+                "abbreviation": "LAL",
+                "displayName": "Los Angeles Lakers"
+              },
+              "score": "55"
+            },
+            {
+              "id": "2",
+              "homeAway": "away",
+              "team": {
+                "id": "2",
+                "abbreviation": "BOS",
+                "displayName": "Boston Celtics"
+              },
+              "score": "60"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401584794",
+      "name": "Golden State Warriors at Miami Heat",
+      "shortName": "GSW @ MIA",
+      "competitions": [
+        {
+          "id": "401584794",
+          "status": {
+            "type": {
+              "id": "1",
+              "name": "STATUS_SCHEDULED",
+              "state": "pre",
+              "completed": false
+            }
+          },
+          "competitors": [
+            {
+              "id": "14",
+              "homeAway": "home",
+              "team": {
+                "id": "14",
+                "abbreviation": "MIA",
+                "displayName": "Miami Heat"
+              },
+              "score": "0"
+            },
+            {
+              "id": "9",
+              "homeAway": "away",
+              "team": {
+                "id": "9",
+                "abbreviation": "GSW",
+                "displayName": "Golden State Warriors"
+              },
+              "score": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401584795",
+      "name": "Denver Nuggets at Philadelphia 76ers",
+      "shortName": "DEN @ PHI",
+      "competitions": [
+        {
+          "id": "401584795",
+          "status": {
+            "type": {
+              "id": "3",
+              "name": "STATUS_FINAL",
+              "state": "post",
+              "completed": true
+            }
+          },
+          "competitors": [
+            {
+              "id": "20",
+              "homeAway": "home",
+              "team": {
+                "id": "20",
+                "abbreviation": "PHI",
+                "displayName": "Philadelphia 76ers"
+              },
+              "score": "108"
+            },
+            {
+              "id": "7",
+              "homeAway": "away",
+              "team": {
+                "id": "7",
+                "abbreviation": "DEN",
+                "displayName": "Denver Nuggets"
+              },
+              "score": "115"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

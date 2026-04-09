@@ -1,0 +1,344 @@
+{
+  "gamepackageJSON": {
+    "header": {
+      "id": "401584793",
+      "competitions": [
+        {
+          "status": {
+            "type": {
+              "id": "2",
+              "name": "STATUS_IN_PROGRESS",
+              "state": "in",
+              "completed": false
+            }
+          },
+          "competitors": [
+            {
+              "id": "13",
+              "homeAway": "home",
+              "team": {
+                "id": "13",
+                "abbreviation": "LAL"
+              }
+            },
+            {
+              "id": "2",
+              "homeAway": "away",
+              "team": {
+                "id": "2",
+                "abbreviation": "BOS"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "plays": [
+      {
+        "id": "40158479301",
+        "sequenceNumber": 1,
+        "type": {
+          "id": "412",
+          "text": "Start Period"
+        },
+        "text": "1st Quarter",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "12:00"
+        },
+        "homeScore": "0",
+        "awayScore": "0",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:00:00Z",
+        "team": {
+          "id": "0"
+        },
+        "participants": []
+      },
+      {
+        "id": "40158479302",
+        "sequenceNumber": 2,
+        "type": {
+          "id": "574",
+          "text": "Jump Shot"
+        },
+        "text": "Jayson Tatum makes 18-foot jump shot",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "11:32"
+        },
+        "homeScore": "0",
+        "awayScore": "2",
+        "scoringPlay": true,
+        "shootingPlay": true,
+        "scoreValue": 2,
+        "wallclock": "2026-03-29T00:01:15Z",
+        "team": {
+          "id": "2"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "4065648",
+              "displayName": "Jayson Tatum"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479303",
+        "sequenceNumber": 3,
+        "type": {
+          "id": "44",
+          "text": "Shooting Foul"
+        },
+        "text": "Anthony Davis shooting foul (1st personal, 1st team)",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "10:45"
+        },
+        "homeScore": "0",
+        "awayScore": "2",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:02:30Z",
+        "team": {
+          "id": "13"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "4066261",
+              "displayName": "Anthony Davis"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479304",
+        "sequenceNumber": 4,
+        "type": {
+          "id": "574",
+          "text": "Free Throw - 1 of 2"
+        },
+        "text": "Jayson Tatum makes free throw 1 of 2",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "10:45"
+        },
+        "homeScore": "0",
+        "awayScore": "3",
+        "scoringPlay": true,
+        "shootingPlay": false,
+        "scoreValue": 1,
+        "wallclock": "2026-03-29T00:02:45Z",
+        "team": {
+          "id": "2"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "4065648",
+              "displayName": "Jayson Tatum"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479305",
+        "sequenceNumber": 5,
+        "type": {
+          "id": "62",
+          "text": "Bad Pass Turnover"
+        },
+        "text": "LeBron James bad pass turnover (1st turnover)",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "9:20"
+        },
+        "homeScore": "0",
+        "awayScore": "3",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:04:00Z",
+        "team": {
+          "id": "13"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "1966",
+              "displayName": "LeBron James"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479306",
+        "sequenceNumber": 6,
+        "type": {
+          "id": "16",
+          "text": "Full Timeout"
+        },
+        "text": "Los Angeles Lakers Full Timeout",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "9:15"
+        },
+        "homeScore": "0",
+        "awayScore": "3",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:04:10Z",
+        "team": {
+          "id": "13"
+        },
+        "participants": []
+      },
+      {
+        "id": "40158479307",
+        "sequenceNumber": 7,
+        "type": {
+          "id": "574",
+          "text": "Three Point Jumper"
+        },
+        "text": "Anthony Davis makes 25-foot three point jumper (LeBron James assists)",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "8:50"
+        },
+        "homeScore": "3",
+        "awayScore": "3",
+        "scoringPlay": true,
+        "shootingPlay": true,
+        "scoreValue": 3,
+        "wallclock": "2026-03-29T00:06:00Z",
+        "team": {
+          "id": "13"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "4066261",
+              "displayName": "Anthony Davis"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479308",
+        "sequenceNumber": 8,
+        "type": {
+          "id": "584",
+          "text": "Substitution"
+        },
+        "text": "Austin Reaves enters the game for D'Angelo Russell",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "8:30"
+        },
+        "homeScore": "3",
+        "awayScore": "3",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:06:30Z",
+        "team": {
+          "id": "13"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "4395725",
+              "displayName": "Austin Reaves"
+            }
+          },
+          {
+            "athlete": {
+              "id": "4066354",
+              "displayName": "D'Angelo Russell"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479309",
+        "sequenceNumber": 9,
+        "type": {
+          "id": "45",
+          "text": "Personal Foul"
+        },
+        "text": "Jaylen Brown personal foul (2nd personal, 2nd team)",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "7:10"
+        },
+        "homeScore": "3",
+        "awayScore": "3",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:08:00Z",
+        "team": {
+          "id": "2"
+        },
+        "participants": [
+          {
+            "athlete": {
+              "id": "3917376",
+              "displayName": "Jaylen Brown"
+            }
+          }
+        ]
+      },
+      {
+        "id": "40158479310",
+        "sequenceNumber": 10,
+        "type": {
+          "id": "412",
+          "text": "End Period"
+        },
+        "text": "End of 1st Quarter",
+        "period": {
+          "number": 1
+        },
+        "clock": {
+          "displayValue": "0:00"
+        },
+        "homeScore": "28",
+        "awayScore": "30",
+        "scoringPlay": false,
+        "shootingPlay": false,
+        "scoreValue": 0,
+        "wallclock": "2026-03-29T00:45:00Z",
+        "team": {
+          "id": "0"
+        },
+        "participants": []
+      }
+    ]
+  }
+}
