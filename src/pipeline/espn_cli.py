@@ -265,6 +265,10 @@ def replay(
         0.0, "--signal-delay", "-s",
         help="Seconds to add to observed_at (latency simulation).",
     ),
+    speed: float = typer.Option(
+        1.0, "--speed", "-x",
+        help="Realtime speed multiplier (e.g. 60 = 60x faster). Only applies in realtime mode.",
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Show individual events."
     ),
@@ -273,13 +277,18 @@ def replay(
         help="Filter: scoring, foul, timeout, turnover, period, substitution.",
     ),
 ) -> None:
-    """Replay ESPN events for backtesting."""
+    """Replay ESPN events for backtesting.
+
+    In realtime mode events are printed live as they arrive — use --speed to
+    compress time (e.g. --speed 60 replays a 2-hour game in ~2 minutes).
+    In fast mode all events are collected first, then the summary is shown.
+    """
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(levelname)s: %(message)s",
     )
     asyncio.run(
-        _do_replay(date, game, mode, store_dir, signal_delay, verbose, event_type)
+        _do_replay(date, game, mode, store_dir, signal_delay, speed, verbose, event_type)
     )
 
 
@@ -289,11 +298,12 @@ async def _do_replay(
     mode: str,
     store_dir: str,
     signal_delay: float,
+    speed: float,
     verbose: bool,
     event_type: str | None,
 ) -> None:
     store = ESPNStore(base_dir=store_dir)
-    replayer = ESPNReplayer(store=store, mode=mode, signal_delay=signal_delay)
+    replayer = ESPNReplayer(store=store, mode=mode, signal_delay=signal_delay, speed=speed)
 
     type_filter = {
         "scoring": ScoringPlayEvent,
@@ -304,19 +314,89 @@ async def _do_replay(
         "substitution": SubstitutionEvent,
     }
 
-    if game:
-        console.print(f"Replaying game [bold]{game}[/bold] in [bold]{mode}[/bold] mode...", end=" ")
-        result = await replayer.replay_game(game, date)
-        results = [result]
+    game_ids = [game] if game else store.list_games(date)
+    if not game_ids:
+        console.print(f"[red]No games stored for {date}[/red]")
+        raise typer.Exit(code=1)
+
+    speed_label = f" at [bold]{speed}x[/bold]" if speed != 1.0 else ""
+    console.print(
+        f"Replaying [bold]{len(game_ids)}[/bold] game(s) for [bold]{date}[/bold]"
+        f" in [bold]{mode}[/bold] mode{speed_label}...\n"
+    )
+
+    if mode == "realtime":
+        # Stream events live — print each one as it arrives so user sees progress
+        results = await _stream_realtime(
+            replayer, game_ids, date, type_filter, event_type
+        )
     else:
-        console.print(f"Replaying all games for [bold]{date}[/bold] in [bold]{mode}[/bold] mode...", end=" ")
-        results = await replayer.replay_date(date)
+        # Fast mode: collect all events, then print summary
+        results = await _collect_fast(replayer, game_ids, date, verbose, type_filter, event_type)
 
     if not results or not any(r.events for r in results):
         console.print(f"[red]No events found[/red]")
         raise typer.Exit(code=1)
 
-    console.print(f"[green]done[/green]\n")
+    _print_replay_summary(results, store_dir)
+
+
+async def _stream_realtime(
+    replayer: ESPNReplayer,
+    game_ids: list[str],
+    date: str,
+    type_filter: dict,
+    event_type: str | None,
+) -> list:
+    """Stream events live, printing each as it arrives. Used for realtime mode."""
+    from datetime import datetime, timezone
+    from .models import ReplayResult
+
+    results = []
+    for game_id in game_ids:
+        console.print(f"[bold]{game_id}[/bold]")
+        events_list = []
+        start = datetime.now(timezone.utc).timestamp()
+
+        async for event in replayer.stream_events(game_id, date):
+            events_list.append(event)
+            # Skip if type filter set and event doesn't match
+            if event_type and event_type in type_filter:
+                if not isinstance(event, type_filter[event_type]):
+                    continue
+            style, label = _event_label(event)
+            console.print(
+                f"  [{style}]{label:>15}[/{style}]  "
+                f"P{event.period} {event.clock}  {event.text}"
+            )
+
+        end = datetime.now(timezone.utc).timestamp()
+        results.append(
+            ReplayResult(
+                game_id=game_id,
+                events=events_list,
+                snapshot_count=len(events_list),
+                duration_seconds=end - start,
+            )
+        )
+        console.print()
+
+    return results
+
+
+async def _collect_fast(
+    replayer: ESPNReplayer,
+    game_ids: list[str],
+    date: str,
+    verbose: bool,
+    type_filter: dict,
+    event_type: str | None,
+) -> list:
+    """Collect all events then display. Used for fast mode."""
+    results = []
+    for game_id in game_ids:
+        result = await replayer.replay_game(game_id, date)
+        results.append(result)
 
     if verbose:
         for result in results:
@@ -324,7 +404,6 @@ async def _do_replay(
                 continue
             console.print(f"[bold]{result.game_id}[/bold] ({len(result.events)} events):")
             for event in result.events:
-                # Apply type filter if specified
                 if event_type and event_type in type_filter:
                     if not isinstance(event, type_filter[event_type]):
                         continue
@@ -335,7 +414,7 @@ async def _do_replay(
                 )
             console.print()
 
-    _print_replay_summary(results, store_dir)
+    return results
 
 
 def _print_replay_summary(results: list, store_dir: str) -> None:

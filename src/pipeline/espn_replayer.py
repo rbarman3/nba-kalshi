@@ -31,6 +31,7 @@ class ESPNReplayer:
         store: ESPNStore instance for loading events
         mode: "fast" (no delays) or "realtime" (paced by wallclock)
         signal_delay: Seconds to add to observed_at on all events (for latency simulation)
+        speed: Multiplier for realtime delays (2.0 = 2x faster, 60.0 = 60x faster)
     """
 
     def __init__(
@@ -38,6 +39,7 @@ class ESPNReplayer:
         store: ESPNStore,
         mode: str = "fast",
         signal_delay: float = 0.0,
+        speed: float = 1.0,
     ):
         """Initialize replayer.
 
@@ -45,15 +47,19 @@ class ESPNReplayer:
             store: ESPNStore instance
             mode: "fast" or "realtime"
             signal_delay: Seconds to add to observed_at on all events
+            speed: Speed multiplier for realtime delays (1.0 = real-time, 60.0 = 60x faster)
         """
         if mode not in ("fast", "realtime"):
             raise ValueError(f"mode must be 'fast' or 'realtime', got '{mode}'")
         if signal_delay < 0:
             raise ValueError(f"signal_delay must be >= 0, got {signal_delay}")
+        if speed <= 0:
+            raise ValueError(f"speed must be > 0, got {speed}")
 
         self.store = store
         self.mode = mode
         self.signal_delay = signal_delay
+        self.speed = speed
 
     def _apply_delay(self, event: Any) -> Any:
         """Apply signal_delay to event's observed_at timestamp.
@@ -90,7 +96,7 @@ class ESPNReplayer:
             if self.mode == "realtime" and i > 0:
                 prev_wallclock = _parse_wallclock(events[i - 1].wallclock)
                 curr_wallclock = _parse_wallclock(event.wallclock)
-                delay_seconds = max(0.0, curr_wallclock - prev_wallclock)
+                delay_seconds = max(0.0, curr_wallclock - prev_wallclock) / self.speed
                 if delay_seconds > 0:
                     await asyncio.sleep(delay_seconds)
 
