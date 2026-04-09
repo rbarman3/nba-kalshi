@@ -42,3 +42,7 @@ demokey.txt
 #Context
 transportandprocess.md
 ClAUDE.md
+
+#ESPN data games
+*.events.jsonl
+*.jsonl

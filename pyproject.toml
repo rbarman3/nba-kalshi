@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 nba-scores = "nba.cli:app"
 nba-server = "nba.server:main"
+nba-espn = "pipeline.espn_cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]

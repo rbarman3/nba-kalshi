@@ -28,6 +28,16 @@ src/
     cli.py            # Typer CLI: scores, lineup, watch
     poller.py         # Background daemon thread used by `watch`
 
+  pipeline/         # Data pipeline — live CDN polling + historical ESPN scraping
+    models.py         # Frozen dataclasses for all pipeline events
+    transport.py      # NBATransport — async CDN poller (live games)
+    processor.py      # NBAProcessor — diff snapshots, emit lineup/score events
+    espn_id_map.py    # Discover ESPN game IDs via scoreboard API
+    espn_transport.py # ESPNScraper — one-shot fetcher for completed games
+    espn_processor.py # Classify ESPN plays into typed events
+    espn_store.py     # JSONL persistence for raw snapshots + processed events
+    espn_cli.py       # CLI entry point (nba-espn)
+
   kalshi/           # Kalshi API integration — SEE CONTRIBUTING BELOW
     models.py         # Kalshi market, contract, order dataclasses
     client.py         # Authenticated HTTP client (REST + WebSocket)
@@ -44,9 +54,14 @@ tests/
   test_live_service.py                    # Unit — scoreboard/lineup parsing (mocked)
   test_poller.py                          # Unit — Poller class
   test_cli.py                             # Unit — CLI commands (mocked)
+  test_espn_id_map.py                     # Unit — ESPN game discovery (mocked)
+  test_espn_transport.py                  # Unit — ESPN scraper (mocked)
+  test_espn_processor.py                  # Unit — ESPN play classification
+  test_espn_store.py                      # Unit — ESPN JSONL persistence
   test_player_to_service_integration.py   # Integration — player service vs real API
   test_cli_integration.py                 # Integration — CLI via CliRunner
   test_server_integration.py             # Integration — HTTP endpoints vs real NBA API
+  fixtures/                               # Sample JSON payloads for tests
   kalshi/                                 # Kalshi test suite (to be added)
   analysis/                               # Analysis test suite (to be added)
 ```
@@ -95,6 +110,81 @@ PYTHONPATH=src python3 -m pytest
 # Integration tests only (requires network)
 PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_player_to_service_integration.py tests/test_cli_integration.py -v
 ```
+
+---
+
+## ESPN Scraper (Built)
+
+An independent CLI tool that scrapes historical NBA play-by-play data from ESPN. Designed for batch collection of completed games to feed into the backtesting pipeline — **not** a live poller.
+
+### Architecture
+
+```
+ESPN Scoreboard API  ──►  ESPNScraper  ──►  ESPNPlayByPlayProcessor  ──►  ESPNStore
+(discover game IDs)       (fetch plays)      (classify into events)        (JSONL files)
+```
+
+### CLI
+
+```bash
+# Scrape all completed games for a date
+nba-espn scrape 2026-03-29
+
+# Scrape a single game by ESPN ID
+nba-espn scrape 2026-03-29 --game 401584793
+
+# Verbose output — show individual events as they're processed
+nba-espn scrape 2026-03-29 --verbose
+
+# Custom output directory (default: data/espn)
+nba-espn scrape 2026-03-29 --store-dir /path/to/output
+
+# List all dates with stored data
+nba-espn list-dates
+
+# List stored games for a specific date
+nba-espn list-games 2026-03-29
+
+# Show all events for a game
+nba-espn show 2026-03-29 401584793
+
+# Filter events by type
+nba-espn show 2026-03-29 401584793 --type scoring
+nba-espn show 2026-03-29 401584793 --type foul
+nba-espn show 2026-03-29 401584793 --type substitution
+```
+
+### Event Types
+
+The processor classifies each ESPN play into one of six typed events:
+
+| Event | Description | Key Fields |
+|-------|-------------|------------|
+| `ScoringPlayEvent` | Made baskets and free throws | `score_value`, `player_id`, `play_type` |
+| `FoulEvent` | Personal, shooting, flagrant fouls | `foul_type`, `player_id`, `team_id` |
+| `TimeoutEvent` | Full and 20-second timeouts | `timeout_type`, `team_id` |
+| `TurnoverEvent` | Bad passes, travels, shot clock violations | `turnover_type`, `player_id`, `team_id` |
+| `PeriodEvent` | Quarter/overtime start and end markers | `event_type` (`"start"` or `"end"`) |
+| `SubstitutionEvent` | Player enters/exits the game | `player_in_id`, `player_out_id`, `team_id` |
+
+All events share common fields: `game_id`, `espn_play_id`, `sequence`, `period`, `clock`, `home_score`, `away_score`, `text`, `wallclock`, `observed_at`.
+
+### Data Storage
+
+Scraped data is stored as JSONL files:
+
+```
+data/espn/
+  2026-03-29/
+    401584793.jsonl          # Raw ESPN play-by-play snapshot
+    401584793.events.jsonl   # Processed typed events
+    401584794.jsonl
+    401584794.events.jsonl
+  2026-03-30/
+    ...
+```
+
+Events are serialized with a `_type` discriminator field so they can be deserialized back into the correct Python class.
 
 ---
 
