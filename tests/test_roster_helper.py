@@ -1,7 +1,7 @@
 """Tests for the _get_roster_for_team helper (no network calls)."""
 import pandas as pd
 from unittest.mock import patch, MagicMock
-from src.nba.player_service import _get_roster_for_team
+from nba.player_service import _get_roster_for_team
 
 
 def _make_roster_endpoint(rows: list[dict]) -> MagicMock:

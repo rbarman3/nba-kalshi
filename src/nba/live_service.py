@@ -4,14 +4,12 @@ Live game data services backed by the nba_api live endpoints.
 Public API
 ----------
 get_live_scoreboard()       -- today's games with current scores (network)
-get_live_lineup(game_id)    -- players currently on court for one game (network)
 
-Mock targets: ``nba.live_service.live_scoreboard.ScoreBoard``, ``nba.live_service.live_boxscore.BoxScore``
+Mock targets: ``nba.live_service.live_scoreboard.ScoreBoard``
 """
-from nba_api.live.nba.endpoints import boxscore as live_boxscore
 from nba_api.live.nba.endpoints import scoreboard as live_scoreboard
 
-from nba.models import GameSummary, PlayerOnCourt
+from nba.models import GameSummary
 
 
 def _game_summary_from_dict(game: dict) -> GameSummary:
@@ -27,29 +25,6 @@ def _game_summary_from_dict(game: dict) -> GameSummary:
         period=game.get("period", 0),
         clock=game.get("gameClock", ""),
     )
-
-
-def _on_court_players(players: list[dict]) -> list[PlayerOnCourt]:
-    return [
-        PlayerOnCourt(
-            name=p["name"],
-            jersey_num=p.get("jerseyNum", ""),
-            position=p.get("position", ""),
-            points=p["statistics"].get("points", 0),
-            assists=p["statistics"].get("assists", 0),
-            rebounds=p["statistics"].get("reboundsTotal", 0),
-        )
-        for p in players
-        if p.get("oncourt") == "1"
-    ]
-
-
-def get_live_lineup(game_id: str) -> tuple[list[PlayerOnCourt], list[PlayerOnCourt]]:
-    """Return (home_players, away_players) currently on the court."""
-    box = live_boxscore.BoxScore(game_id=game_id)
-    home = _on_court_players(box.home_team_player_stats.get_dict())
-    away = _on_court_players(box.away_team_player_stats.get_dict())
-    return home, away
 
 
 def get_live_scoreboard() -> list[GameSummary]:

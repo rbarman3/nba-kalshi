@@ -3,7 +3,7 @@ from dataclasses import asdict
 
 import fastapi
 
-from nba.live_service import get_live_lineup, get_live_scoreboard
+from nba.live_service import get_live_scoreboard
 from nba.player_service import find_players_by_name, find_players_by_team
 
 app = fastapi.FastAPI(title="NBA Live Scores API")
@@ -13,15 +13,6 @@ app = fastapi.FastAPI(title="NBA Live Scores API")
 def scoreboard():
     games = get_live_scoreboard()
     return {"games": [asdict(g) for g in games]}
-
-
-@app.get("/lineup/{game_id}")
-def lineup(game_id: str):
-    try:
-        home, away = get_live_lineup(game_id)
-    except Exception as e:
-        raise fastapi.HTTPException(status_code=502, detail=str(e))
-    return {"home": [asdict(p) for p in home], "away": [asdict(p) for p in away]}
 
 
 @app.get("/players")
