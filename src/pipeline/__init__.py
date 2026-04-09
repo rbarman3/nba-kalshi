@@ -10,4 +10,17 @@ ESPN scraper (independent tool):
   3. espn_processor.py — Classify plays into typed events
   4. espn_store.py — Persist raw + processed data as JSONL
   5. espn_cli.py — CLI entry point (nba-espn)
+
+Backtesting & Replay:
+  1. espn_replayer.py — Replay ESPN events with optional realtime pacing
+  2. replay_cli.py — CLI entry point for NBA CDN replayer (nba-replay)
+  3. replayer.py — Replay raw NBA CDN snapshots through processor
 """
+
+from .espn_replayer import ESPNReplayer
+from .models import ReplayResult
+
+__all__ = [
+    "ESPNReplayer",
+    "ReplayResult",
+]

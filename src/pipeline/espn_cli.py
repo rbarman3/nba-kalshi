@@ -5,12 +5,20 @@ Scrapes historical games, classifies plays into typed events, and
 stores results for consumption by the backtesting pipeline.
 
 Usage:
+    # Scraping commands
     nba-espn scrape 2026-03-29
     nba-espn scrape 2026-03-29 --game 401584793
     nba-espn scrape 2026-03-29 --store-dir data/espn
+
+    # Discovery commands
     nba-espn list-games 2026-03-29
     nba-espn list-dates
     nba-espn show 2026-03-29 401584793
+
+    # Replay/backtesting commands
+    nba-espn replay 2026-03-29
+    nba-espn replay 2026-03-29 --game 401584793 --mode realtime
+    nba-espn replay 2026-03-29 --mode realtime --signal-delay 1.0
 """
 import asyncio
 import logging
@@ -21,6 +29,7 @@ from rich.table import Table
 
 from pipeline.espn_id_map import discover_espn_game_ids
 from pipeline.espn_processor import ESPNPlayByPlayProcessor
+from pipeline.espn_replayer import ESPNReplayer
 from pipeline.espn_store import ESPNStore
 from pipeline.espn_transport import ESPNScraper
 from pipeline.models import (
@@ -238,6 +247,138 @@ def show(
             f"  [{style}]{label:>15}[/{style}]  "
             f"P{event.period} {event.clock}  {event.text}"
         )
+
+
+@app.command()
+def replay(
+    date: str = typer.Argument(help="Date to replay (YYYY-MM-DD)."),
+    game: str = typer.Option(
+        None, "--game", "-g", help="Replay a single ESPN game ID."
+    ),
+    mode: str = typer.Option(
+        "fast", "--mode", "-m", help="Replay mode: fast or realtime."
+    ),
+    store_dir: str = typer.Option(
+        "data/espn", "--store-dir", "-d", help="Store directory."
+    ),
+    signal_delay: float = typer.Option(
+        0.0, "--signal-delay", "-s",
+        help="Seconds to add to observed_at (latency simulation).",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show individual events."
+    ),
+    event_type: str = typer.Option(
+        None, "--type", "-t",
+        help="Filter: scoring, foul, timeout, turnover, period, substitution.",
+    ),
+) -> None:
+    """Replay ESPN events for backtesting."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
+    asyncio.run(
+        _do_replay(date, game, mode, store_dir, signal_delay, verbose, event_type)
+    )
+
+
+async def _do_replay(
+    date: str,
+    game: str | None,
+    mode: str,
+    store_dir: str,
+    signal_delay: float,
+    verbose: bool,
+    event_type: str | None,
+) -> None:
+    store = ESPNStore(base_dir=store_dir)
+    replayer = ESPNReplayer(store=store, mode=mode, signal_delay=signal_delay)
+
+    type_filter = {
+        "scoring": ScoringPlayEvent,
+        "foul": FoulEvent,
+        "timeout": TimeoutEvent,
+        "turnover": TurnoverEvent,
+        "period": PeriodEvent,
+        "substitution": SubstitutionEvent,
+    }
+
+    if game:
+        console.print(f"Replaying game [bold]{game}[/bold] in [bold]{mode}[/bold] mode...", end=" ")
+        result = await replayer.replay_game(game, date)
+        results = [result]
+    else:
+        console.print(f"Replaying all games for [bold]{date}[/bold] in [bold]{mode}[/bold] mode...", end=" ")
+        results = await replayer.replay_date(date)
+
+    if not results or not any(r.events for r in results):
+        console.print(f"[red]No events found[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]done[/green]\n")
+
+    if verbose:
+        for result in results:
+            if not result.events:
+                continue
+            console.print(f"[bold]{result.game_id}[/bold] ({len(result.events)} events):")
+            for event in result.events:
+                # Apply type filter if specified
+                if event_type and event_type in type_filter:
+                    if not isinstance(event, type_filter[event_type]):
+                        continue
+                style, label = _event_label(event)
+                console.print(
+                    f"  [{style}]{label:>15}[/{style}]  "
+                    f"P{event.period} {event.clock}  {event.text}"
+                )
+            console.print()
+
+    _print_replay_summary(results, store_dir)
+
+
+def _print_replay_summary(results: list, store_dir: str) -> None:
+    """Print summary table of replay results."""
+    table = Table(title="ESPN Replay Summary")
+    table.add_column("ESPN Game ID", style="bold")
+    table.add_column("Events", justify="right")
+    table.add_column("Duration (s)", justify="right")
+    table.add_column("Scoring", justify="right")
+    table.add_column("Fouls", justify="right")
+    table.add_column("Timeouts", justify="right")
+    table.add_column("Turnovers", justify="right")
+    table.add_column("Periods", justify="right")
+    table.add_column("Subs", justify="right")
+
+    total_events = 0
+    for result in results:
+        if not result.events:
+            continue
+        counts = {
+            "scoring": sum(1 for e in result.events if isinstance(e, ScoringPlayEvent)),
+            "fouls": sum(1 for e in result.events if isinstance(e, FoulEvent)),
+            "timeouts": sum(1 for e in result.events if isinstance(e, TimeoutEvent)),
+            "turnovers": sum(1 for e in result.events if isinstance(e, TurnoverEvent)),
+            "periods": sum(1 for e in result.events if isinstance(e, PeriodEvent)),
+            "subs": sum(1 for e in result.events if isinstance(e, SubstitutionEvent)),
+        }
+        total_events += len(result.events)
+        table.add_row(
+            result.game_id,
+            str(len(result.events)),
+            f"{result.duration_seconds:.3f}",
+            str(counts["scoring"]),
+            str(counts["fouls"]),
+            str(counts["timeouts"]),
+            str(counts["turnovers"]),
+            str(counts["periods"]),
+            str(counts["subs"]),
+        )
+
+    console.print(table)
+    console.print(f"\n[bold]Total events replayed:[/bold] {total_events}")
+    console.print(f"[bold]Store directory:[/bold] {store_dir}/")
 
 
 if __name__ == "__main__":

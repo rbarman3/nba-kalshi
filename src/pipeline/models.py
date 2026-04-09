@@ -194,3 +194,16 @@ class SubstitutionEvent:
     text: str                   # e.g. "Reaves enters the game for Russell"
     wallclock: str
     observed_at: float
+
+
+@dataclass(frozen=True)
+class ReplayResult:
+    """Result of replaying a single game's events.
+
+    Used by both ESPNReplayer and SnapshotReplayer to summarize
+    the output of a backtesting replay session.
+    """
+    game_id: str
+    events: list                # List of event instances (type varies)
+    snapshot_count: int         # Number of snapshots/events processed
+    duration_seconds: float     # Wall-clock time elapsed during replay
