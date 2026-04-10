@@ -22,6 +22,8 @@ from pipeline.models import (
     LineupChangeEvent,
     PeriodEvent,
     ScoreChangeEvent,
+    ScoringPlayEvent,
+    SubstitutionEvent,
     TimeoutEvent,
     TurnoverEvent,
 )
@@ -74,6 +76,18 @@ async def _log_events(event_queue: asyncio.Queue) -> None:
         elif isinstance(event, PeriodEvent):
             logger.info(
                 f"[PERIOD]  game={event.game_id} {event.prev_period}→{event.curr_period}"
+            )
+        elif isinstance(event, ScoringPlayEvent):
+            logger.info(
+                f"[BASKET]  game={event.game_id} period={event.period} "
+                f"clock={event.clock} {event.team_tricode} {event.player_name} "
+                f"+{event.score_delta}"
+            )
+        elif isinstance(event, SubstitutionEvent):
+            logger.info(
+                f"[SUB]     game={event.game_id} period={event.period} "
+                f"clock={event.clock} {event.team_tricode} {event.player_name} "
+                f"{event.sub_type}"
             )
 
 
