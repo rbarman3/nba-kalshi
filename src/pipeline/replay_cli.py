@@ -14,6 +14,16 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from pipeline.models import (
+    FoulEvent,
+    LineupChangeEvent,
+    PeriodEvent,
+    ScoreChangeEvent,
+    ScoringPlayEvent,
+    SubstitutionEvent,
+    TimeoutEvent,
+    TurnoverEvent,
+)
 from pipeline.replayer import SnapshotReplayer, ReplayResult
 from pipeline.store import SnapshotStore
 
@@ -24,27 +34,58 @@ logger = logging.getLogger(__name__)
 
 def _print_result(result: ReplayResult) -> None:
     """Print a single ReplayResult to the console."""
-    lineup_events = [e for e in result.events if hasattr(e, "players_in")]
-    score_events = [e for e in result.events if hasattr(e, "home_score")]
+    by_type = {}
+    for e in result.events:
+        name = type(e).__name__
+        by_type[name] = by_type.get(name, 0) + 1
 
+    counts = "  ".join(f"{k}={v}" for k, v in sorted(by_type.items()))
     console.print(
         f"  [bold]{result.game_id}[/bold]  "
         f"snapshots={result.snapshot_count}  "
-        f"lineup_changes={len(lineup_events)}  "
-        f"score_changes={len(score_events)}  "
+        f"{counts}  "
         f"time={result.duration_seconds:.3f}s"
     )
 
     for event in result.events:
-        if hasattr(event, "players_in"):
+        if isinstance(event, LineupChangeEvent):
             console.print(
-                f"    [cyan]LINEUP[/cyan] P{event.period} {event.clock}  "
+                f"    [cyan]LINEUP[/cyan]  P{event.period} {event.clock}  "
                 f"in={set(event.players_in)}  out={set(event.players_out)}"
             )
-        elif hasattr(event, "home_score"):
+        elif isinstance(event, ScoreChangeEvent):
             console.print(
-                f"    [yellow]SCORE[/yellow]  P{event.period} {event.clock}  "
+                f"    [yellow]SCORE[/yellow]   P{event.period} {event.clock}  "
                 f"{event.home_prev}-{event.away_prev} → {event.home_score}-{event.away_score}"
+            )
+        elif isinstance(event, FoulEvent):
+            console.print(
+                f"    [red]FOUL[/red]    P{event.period} {event.clock}  "
+                f"{event.team_tricode} {event.player_name} fouls={event.curr_fouls}"
+            )
+        elif isinstance(event, TimeoutEvent):
+            console.print(
+                f"    [magenta]TIMEOUT[/magenta] P{event.period} {event.clock}  "
+                f"{event.team_tricode} remaining={event.curr_timeouts}"
+            )
+        elif isinstance(event, TurnoverEvent):
+            console.print(
+                f"    [red]TOVER[/red]   P{event.period} {event.clock}  "
+                f"{event.team_tricode} {event.player_name}"
+            )
+        elif isinstance(event, PeriodEvent):
+            console.print(
+                f"    [green]PERIOD[/green]  {event.prev_period}→{event.curr_period}"
+            )
+        elif isinstance(event, ScoringPlayEvent):
+            console.print(
+                f"    [yellow]BASKET[/yellow]  P{event.period} {event.clock}  "
+                f"{event.team_tricode} {event.player_name} +{event.score_delta}"
+            )
+        elif isinstance(event, SubstitutionEvent):
+            console.print(
+                f"    [blue]SUB[/blue]     P{event.period} {event.clock}  "
+                f"{event.team_tricode} {event.player_name} {event.sub_type}"
             )
 
 
