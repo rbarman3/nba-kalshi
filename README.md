@@ -1,24 +1,101 @@
-# NBA → Kalshi Betting Pipeline
+# NBA Live Data Pipeline
 
-An automated pipeline that polls live NBA game data, detects player substitutions in real time, and trades Kalshi prediction markets on the mispricing window between a substitution and market repricing.
+A real-time pipeline that polls NBA CDN boxscore data, detects game events by diffing consecutive snapshots, persists data for backtesting, and will eventually trade prediction markets on detected signals.
 
-## Overview
+## Architecture
+
+### Core Pipeline
+
+The pipeline is a linear 4-stage flow connected by `asyncio.Queue` channels:
 
 ```
-get_live_scoreboard()
-        │ game_ids
-        ▼
-NBATransport ──► raw_queue ──► NBAProcessor ──► event_queue ──► (future: strategy)
-        │
-        └──► SnapshotStore (JSONL → Parquet on game FINAL)
+Transport ──► raw_queue ──► Processor ──► event_queue ──► Strategy (planned) ──► Execution (planned)
 ```
 
-The system has four planned layers:
+| Stage | Module | Status | Description |
+|-------|--------|--------|-------------|
+| **Transport** | `pipeline/transport.py` | Built | Async CDN polling with jitter, hash dedup, game state machine |
+| **Processor** | `pipeline/processor.py` | Built | Diffs consecutive snapshots to emit typed events |
+| **Strategy** | — | Planned | Consume events, generate trade signals |
+| **Execution** | — | Planned | Place and manage prediction market orders |
 
-1. **Market data feed (built)** — polls NBA CDN boxscore endpoint, diffs consecutive snapshots, emits `LineupChangeEvent` when player substitutions occur. Persists snapshots to JSONL during live games, compacts to Parquet when game ends.
-2. **Strategy (planned)** — consumes lineup change events, maps to Kalshi markets, determines edge and signal.
-3. **Execution (planned)** — places and manages Kalshi orders.
-4. **Backtesting (planned)** — replays persisted snapshots through strategy layer.
+### Infrastructure
+
+These modules support the core pipeline but are not stages in the data flow:
+
+```
+                                    ┌──► SnapshotStore (JSONL → Parquet)
+Transport ──► raw_queue ──► Processor ──► event_queue
+    ▲                                        │
+    │                                        └──► Runner (logs events)
+SnapshotReplayer (backtesting)
+    └── loads stored snapshots, feeds into Processor
+```
+
+| Module | Purpose |
+|--------|---------|
+| **Store** (`pipeline/store.py`) | Side-channel off transport — persists snapshots to disk during live games, compacts to Parquet on game end |
+| **Replayer** (`pipeline/replayer.py`) | Separate entry point (`nba-replay`) — loads stored snapshots and feeds them through processor for backtesting |
+| **Runner** (`nba/runner.py`) | Orchestrator — discovers today's games, wires transport + processor, logs events |
+| **Watchdog** | Planned — monitors transport health |
+
+---
+
+## Quick Start
+
+```bash
+pip install -e ".[dev]"
+```
+
+### Run Live Pipeline
+
+```bash
+# Poll today's live games
+nba-pipeline
+
+# With snapshot persistence
+SNAPSHOT_STORE_ENABLED=true nba-pipeline
+```
+
+### Replay Stored Data
+
+```bash
+# Replay all games from a date (fast mode)
+nba-replay 2026-04-09
+
+# Replay a single game with event details
+nba-replay 2026-04-09 --game 0022501170 --verbose
+
+# Simulate real-time pacing
+nba-replay 2026-04-09 --mode realtime
+
+# Add signal delay to simulate detection latency
+nba-replay 2026-04-09 --signal-delay 3.0
+```
+
+### Other CLI Tools
+
+```bash
+nba-scores scores    # Today's live scoreboard
+nba-server           # FastAPI server (GET /scoreboard, /players, /players/team)
+```
+
+---
+
+## Event Types
+
+All events are detected by diffing consecutive boxscore snapshots (the NBA CDN boxscore endpoint does not include a play-by-play `actions[]` array).
+
+| Event | Trigger | Key Fields |
+|-------|---------|------------|
+| `LineupChangeEvent` | Player `oncourt` field changes | `players_in`, `players_out` (frozensets of personIds) |
+| `ScoreChangeEvent` | Team `score` changes | `home_score`, `away_score`, `home_prev`, `away_prev` |
+| `FoulEvent` | Player `foulsPersonal` increases | `player_name`, `team_tricode`, `prev_fouls`, `curr_fouls` |
+| `TimeoutEvent` | Team `timeoutsRemaining` decreases | `team_tricode`, `prev_timeouts`, `curr_timeouts` |
+| `TurnoverEvent` | Player `turnovers` stat increases | `player_name`, `team_tricode`, `prev_turnovers`, `curr_turnovers` |
+| `PeriodEvent` | `game.period` increases | `prev_period`, `curr_period`, `game_status` |
+
+All events include `game_id`, `period`, `clock`, `home_score`, `away_score`, and `observed_at`.
 
 ---
 
@@ -26,81 +103,79 @@ The system has four planned layers:
 
 ```
 src/
-  pipeline/             # Market data feed (Layer 1 + 2)
+  pipeline/
     transport.py        # NBATransport — async CDN polling, jitter, dedup, game state machine
-    processor.py        # NBAProcessor — lineup diff, LineupChangeEvent emission
+    processor.py        # NBAProcessor — snapshot diffing, event emission
     store.py            # SnapshotStore — JSONL ingestion + Parquet compaction
-    models.py           # RawSnapshot, LineupChangeEvent, FeedHealthEvent
+    replayer.py         # SnapshotReplayer — replay engine with fast/realtime modes
+    replay_cli.py       # nba-replay CLI tool
+    models.py           # All event dataclasses + RawSnapshot
 
-  nba/                  # NBA data service (scores, player lookup, HTTP server, runner)
-    live_service.py     # get_live_scoreboard()
-    player_service.py   # find_players_by_name(), find_players_by_team()
-    server.py           # FastAPI: GET /scoreboard, /players, /players/team
-    cli.py              # Typer CLI: scores command
-    runner.py           # Pipeline orchestrator — wires transport + processor + store
+  nba/
+    runner.py           # Pipeline orchestrator — discovers games, wires layers
+    live_service.py     # get_live_scoreboard() — today's games from NBA API
+    player_service.py   # Player/team lookup
+    server.py           # FastAPI server
+    cli.py              # nba-scores CLI
     models.py           # GameSummary, Player, Team
 
-  kalshi/               # Kalshi integration — stub only, not yet implemented
-    __init__.py
+tests/
+  test_processor.py     # Processor extract/diff unit tests
+  test_transport.py     # Transport polling tests
+  test_store.py         # Persistence tests
+  test_replayer.py      # Replay engine tests
+  test_server_integration.py
+  test_player_service.py
+  ...
 
-tests/                  # Unit + integration tests
-scripts/
-  debug_transport.py    # Ad-hoc transport debugging
-docs/
-  DATA_FEED_GAPS.md     # Market data feed gap analysis
+data/
+  snapshots/            # Persisted game data (JSONL + Parquet)
+    {season}/{game_type}/{date}/{game_id}.parquet
 ```
 
 ---
 
-## Install
+## Snapshot Storage
 
-```bash
-pip install -e ".[dev]"
+Live snapshots are stored under `data/snapshots/` organized by season, game type, and date:
+
+```
+data/snapshots/2025-26/regular/2026-04-09/0022501170.parquet
 ```
 
-## Run Pipeline
+- **Live games**: Appended to `.jsonl` files
+- **Game over**: Compacted to `.parquet` with zstd compression, JSONL deleted
+- **Loading**: Prefers Parquet, falls back to JSONL
 
-```bash
-# Run the full market data feed against today's live games
-PYTHONPATH=src python3 -m nba.runner
+---
 
-# With snapshot persistence enabled
-SNAPSHOT_STORE_ENABLED=true PYTHONPATH=src python3 -m nba.runner
-```
+## Transport Details
 
-## HTTP Server
+`NBATransport` polls `https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json`
 
-```bash
-nba-server
-# or
-uvicorn nba.server:app --reload --port 8000
-```
+- Game state machine: `UNKNOWN → NOT_STARTED (403) → LIVE (gameStatus==2) → FINAL (gameStatus==3)`
+- Hash-based deduplication — only queues snapshots when payload changes
+- Jittered poll interval (configurable, default 0.6–1.2s)
+- Multi-game concurrency via `asyncio.gather`
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /scoreboard` | Today's games with live scores |
-| `GET /players?name=` | Search players by name |
-| `GET /players/team?name=` | Roster by team full name |
+---
 
-OpenAPI docs at `http://localhost:8000/docs`.
+## Replay Engine
 
-## CLI
+`SnapshotReplayer` loads stored snapshots and feeds them through `NBAProcessor`:
 
-```bash
-nba-scores scores    # Today's live scoreboard
-```
+- **Fast mode**: No delays, processes all snapshots immediately
+- **Realtime mode**: Paces snapshots by original `fetched_at` timestamps
+- **Signal delay**: Offsets `observed_at` on emitted events to simulate detection-to-execution latency
+- **Anti-bias**: `stream_game()` async generator yields events one at a time, preventing look-ahead
+
+---
 
 ## Run Tests
 
 ```bash
-# All tests with coverage
-PYTHONPATH=src python3 -m pytest
-
-# Single test
-PYTHONPATH=src python3 -m pytest tests/test_processor.py::TestDiffLineups::test_simultaneous_in_out -v
-
-# Integration tests only (requires network)
-PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_player_to_service_integration.py -v
+PYTHONPATH=src python3 -m pytest                    # All tests
+PYTHONPATH=src python3 -m pytest tests/test_processor.py -v  # Processor only
 ```
 
 ---
@@ -110,72 +185,8 @@ PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_pla
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `SNAPSHOT_STORE_ENABLED` | `"false"` | Enable snapshot persistence to disk |
-| `SNAPSHOT_STORE_DIR` | `"data/snapshots"` | Base directory for JSONL/Parquet files |
+| `SNAPSHOT_STORE_DIR` | `"data/snapshots"` | Base directory for snapshot files |
 | `PIPELINE_POLL_MIN` | `"0.6"` | Minimum poll interval (seconds) |
 | `PIPELINE_POLL_MAX` | `"1.2"` | Maximum poll interval (seconds) |
-| `NBA_CDN_USER_AGENT` | Chrome 145 UA | Override Akamai User-Agent fingerprint |
+| `NBA_CDN_USER_AGENT` | Chrome 145 UA | Override User-Agent header |
 | `NBA_CDN_SEC_CH_UA` | Chrome 145 | Override Sec-Ch-Ua header |
-
----
-
-## Pipeline Architecture
-
-### Layer 1 — Transport (`src/pipeline/transport.py`)
-
-`NBATransport` polls the NBA CDN boxscore endpoint with jittered intervals (0.6–1.2s). Emits `RawSnapshot` onto an `asyncio.Queue`.
-
-- Polls `https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json`
-- Game state machine: UNKNOWN → NOT_STARTED (403) → LIVE (gameStatus==2) → FINAL (gameStatus==3)
-- Hash-based deduplication — skips unchanged payloads
-- Multi-game concurrency via `asyncio.gather`
-- On game FINAL: triggers Parquet compaction via `SnapshotStore.compact()`
-
-### Layer 2 — Processor (`src/pipeline/processor.py`)
-
-`NBAProcessor` diffs consecutive `RawSnapshot` objects to detect lineup changes.
-
-- Reads `player.oncourt` ("1" = on court, "0" = bench) from each player in the payload
-- First snapshot per game initializes state without emitting
-- Subsequent snapshots are diffed — emits `LineupChangeEvent` only when players change
-
-### Persistence — Store (`src/pipeline/store.py`)
-
-`SnapshotStore` persists snapshots for backtesting replay.
-
-- **Live games:** Appends to `data/snapshots/{YYYY-MM-DD}/{game_id}.jsonl`
-- **Game over:** Compacts JSONL → Parquet with zstd compression, deletes JSONL
-- **Loading:** Prefers Parquet if available, falls back to JSONL
-
-### Runner (`src/nba/runner.py`)
-
-Discovers today's games via `get_live_scoreboard()`, wires all layers, and runs them concurrently.
-
----
-
-## What's Built vs Planned
-
-| Component | Status | Description |
-|-----------|--------|-------------|
-| `NBATransport` | Built | Async CDN polling, jitter, dedup, game state machine |
-| `NBAProcessor` | Built | Lineup diff engine, emits `LineupChangeEvent` |
-| `SnapshotStore` | Built | JSONL ingestion + Parquet compaction |
-| Pipeline runner | Built | Discovers games, wires layers, runs concurrently |
-| `TradingStrategy` | Planned | Consume `LineupChangeEvent`, generate trade signals |
-| `KalshiClient` | Planned | Authenticated HTTP client for Kalshi API |
-| `OrderManager` | Planned | Place and manage Kalshi orders |
-| `FeedWatchdog` | Planned | Feed health monitoring (model exists, implementation removed) |
-
----
-
-## Mock Targets
-
-When writing unit tests, patch at the **module level** where the name is used:
-
-| Symbol | Mock target |
-|--------|-------------|
-| `players_static.find_players_by_full_name` | `nba.player_service.players_static.find_players_by_full_name` |
-| `teams_static.find_teams_by_full_name` | `nba.player_service.teams_static.find_teams_by_full_name` |
-| `_get_roster_for_team` | `nba.player_service._get_roster_for_team` |
-| `CommonTeamRoster` | `nba.player_service.commonteamroster.CommonTeamRoster` |
-| `ScoreBoard` | `nba.live_service.live_scoreboard.ScoreBoard` |
-| `httpx.AsyncClient` | `pipeline.transport.httpx.AsyncClient` |
