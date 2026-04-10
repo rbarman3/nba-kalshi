@@ -8,6 +8,8 @@ Diffs consecutive snapshots to detect:
   - Timeouts (per-team timeoutsRemaining decrease)
   - Turnovers (per-player turnovers increase)
   - Period changes (game.period increase)
+  - Scoring plays (per-player points increase)
+  - Substitutions (per-player in/out with team context)
 """
 import asyncio
 import logging
@@ -17,6 +19,8 @@ from .models import (
     RawSnapshot,
     LineupChangeEvent,
     ScoreChangeEvent,
+    ScoringPlayEvent,
+    SubstitutionEvent,
     FoulEvent,
     TimeoutEvent,
     TurnoverEvent,
@@ -42,6 +46,8 @@ class NBAProcessor:
         self._foul_state: dict[str, dict[str, dict[str, dict]]] = {}
         self._turnover_state: dict[str, dict[str, dict[str, dict]]] = {}
         self._period_state: dict[str, dict] = {}
+        self._points_state: dict[str, dict[str, dict[str, dict]]] = {}
+        self._roster_state: dict[str, dict[str, dict[str, dict]]] = {}
 
     async def run(self) -> None:
         """Consume snapshots forever. Never returns."""
@@ -126,6 +132,28 @@ class NBAProcessor:
                 await self.out_queue.put(period_evt)
 
         self._period_state[game_id] = curr_period
+
+        # Scoring play diffing (per-player points)
+        curr_points = extract_player_points(snapshot)
+        prev_points = self._points_state.get(game_id)
+
+        if not is_first and prev_points is not None:
+            for evt in diff_player_points(game_id, prev_points, curr_points, snapshot):
+                logger.info("Scoring play: game=%s player=%s +%d", game_id, evt.player_name, evt.score_delta)
+                await self.out_queue.put(evt)
+
+        self._points_state[game_id] = curr_points
+
+        # Substitution diffing (per-player in/out with team context)
+        curr_roster = extract_roster(snapshot)
+        prev_roster = self._roster_state.get(game_id)
+
+        if not is_first and prev_roster is not None:
+            for evt in diff_substitutions(game_id, prev_roster, curr_roster, prev_lineup, curr_lineup, snapshot):
+                logger.info("Substitution: game=%s %s %s %s", game_id, evt.sub_type, evt.player_name, evt.team_tricode)
+                await self.out_queue.put(evt)
+
+        self._roster_state[game_id] = curr_roster
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +274,58 @@ def extract_period(snapshot: RawSnapshot) -> dict:
         "period": game.get("period", 0),
         "game_status": game.get("gameStatus", 1),
     }
+
+
+def extract_player_points(snapshot: RawSnapshot) -> dict[str, dict[str, dict]]:
+    """Extract per-player points from a raw snapshot.
+
+    Returns:
+        Dict with 'home' and 'away' keys, each mapping player_id to
+        {name, points, team_id, tricode}.
+    """
+    game = snapshot.payload.get("game", {})
+    result = {}
+    for side, key in [("home", "homeTeam"), ("away", "awayTeam")]:
+        team = game.get(key, {})
+        team_id = team.get("teamId", 0)
+        tricode = team.get("teamTricode", "")
+        players = {}
+        for p in team.get("players", []):
+            pid = str(p.get("personId", ""))
+            players[pid] = {
+                "name": p.get("name", ""),
+                "points": p.get("statistics", {}).get("points", 0),
+                "team_id": team_id,
+                "tricode": tricode,
+            }
+        result[side] = players
+    return result
+
+
+def extract_roster(snapshot: RawSnapshot) -> dict[str, dict[str, dict]]:
+    """Extract player roster with oncourt status and identity info.
+
+    Returns:
+        Dict with 'home' and 'away' keys, each mapping player_id to
+        {name, oncourt, team_id, tricode}.
+    """
+    game = snapshot.payload.get("game", {})
+    result = {}
+    for side, key in [("home", "homeTeam"), ("away", "awayTeam")]:
+        team = game.get(key, {})
+        team_id = team.get("teamId", 0)
+        tricode = team.get("teamTricode", "")
+        players = {}
+        for p in team.get("players", []):
+            pid = str(p.get("personId", ""))
+            players[pid] = {
+                "name": p.get("name", ""),
+                "oncourt": p.get("oncourt") == "1",
+                "team_id": team_id,
+                "tricode": tricode,
+            }
+        result[side] = players
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -446,3 +526,112 @@ def diff_period(
         game_status=curr_period["game_status"],
         observed_at=snapshot.fetched_at,
     )
+
+
+def diff_player_points(
+    game_id: str,
+    prev_points: dict[str, dict[str, dict]],
+    curr_points: dict[str, dict[str, dict]],
+    snapshot: RawSnapshot,
+) -> list[ScoringPlayEvent]:
+    """Diff consecutive per-player points. Returns event for each player whose points increased."""
+    game = snapshot.payload.get("game", {})
+    period = game.get("period", 0)
+    clock = game.get("gameClock", "PT00M00.00S")
+    home_score = game.get("homeTeam", {}).get("score", 0)
+    away_score = game.get("awayTeam", {}).get("score", 0)
+
+    events = []
+    for side in ("home", "away"):
+        prev_players = prev_points[side]
+        curr_players = curr_points[side]
+        for pid, curr_data in curr_players.items():
+            if pid not in prev_players:
+                continue
+            prev_count = prev_players[pid]["points"]
+            curr_count = curr_data["points"]
+            if curr_count > prev_count:
+                events.append(ScoringPlayEvent(
+                    game_id=game_id,
+                    period=period,
+                    clock=clock,
+                    team_id=curr_data["team_id"],
+                    team_tricode=curr_data["tricode"],
+                    player_id=pid,
+                    player_name=curr_data["name"],
+                    prev_points=prev_count,
+                    curr_points=curr_count,
+                    score_delta=curr_count - prev_count,
+                    home_score=home_score,
+                    away_score=away_score,
+                    observed_at=snapshot.fetched_at,
+                ))
+    return events
+
+
+def diff_substitutions(
+    game_id: str,
+    prev_roster: dict[str, dict[str, dict]],
+    curr_roster: dict[str, dict[str, dict]],
+    prev_lineup: dict[str, frozenset[str]],
+    curr_lineup: dict[str, frozenset[str]],
+    snapshot: RawSnapshot,
+) -> list[SubstitutionEvent]:
+    """Emit per-player SubstitutionEvent for each oncourt change, with team context."""
+    prev_all = prev_lineup["home"] | prev_lineup["away"]
+    curr_all = curr_lineup["home"] | curr_lineup["away"]
+
+    players_in = curr_all - prev_all
+    players_out = prev_all - curr_all
+
+    if not players_in and not players_out:
+        return []
+
+    game = snapshot.payload.get("game", {})
+    period = game.get("period", 0)
+    clock = game.get("gameClock", "PT00M00.00S")
+    home_score = game.get("homeTeam", {}).get("score", 0)
+    away_score = game.get("awayTeam", {}).get("score", 0)
+
+    # Build a flat lookup from both teams in curr_roster
+    all_players = {}
+    for side in ("home", "away"):
+        all_players.update(curr_roster[side])
+    # Also include prev_roster for players going out
+    for side in ("home", "away"):
+        for pid, data in prev_roster[side].items():
+            if pid not in all_players:
+                all_players[pid] = data
+
+    events = []
+    for pid in sorted(players_in):
+        info = all_players.get(str(pid), {})
+        events.append(SubstitutionEvent(
+            game_id=game_id,
+            period=period,
+            clock=clock,
+            team_id=info.get("team_id", 0),
+            team_tricode=info.get("tricode", ""),
+            player_id=str(pid),
+            player_name=info.get("name", ""),
+            sub_type="in",
+            home_score=home_score,
+            away_score=away_score,
+            observed_at=snapshot.fetched_at,
+        ))
+    for pid in sorted(players_out):
+        info = all_players.get(str(pid), {})
+        events.append(SubstitutionEvent(
+            game_id=game_id,
+            period=period,
+            clock=clock,
+            team_id=info.get("team_id", 0),
+            team_tricode=info.get("tricode", ""),
+            player_id=str(pid),
+            player_name=info.get("name", ""),
+            sub_type="out",
+            home_score=home_score,
+            away_score=away_score,
+            observed_at=snapshot.fetched_at,
+        ))
+    return events

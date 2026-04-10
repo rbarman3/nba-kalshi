@@ -138,3 +138,57 @@ class PeriodEvent:
     away_score: int
     game_status: int                # 1=not started, 2=live, 3=final
     observed_at: float
+
+
+@dataclass(frozen=True)
+class ScoringPlayEvent:
+    """Emitted when a player's points stat increases between snapshots.
+
+    Identifies WHO scored and the point delta. Cannot determine shot type
+    (2pt vs 3pt vs FT) from boxscore stats alone — use score_delta instead.
+    """
+    game_id: str
+    period: int
+    clock: str
+    team_id: int
+    team_tricode: str
+    player_id: str
+    player_name: str
+    prev_points: int
+    curr_points: int
+    score_delta: int                # curr_points - prev_points (1, 2, 3, or more if gap)
+    home_score: int
+    away_score: int
+    observed_at: float
+
+
+@dataclass(frozen=True)
+class SubstitutionEvent:
+    """Emitted for each individual player entering or leaving the court.
+
+    Derived from lineup diff. sub_type is "in" or "out".
+    Provides per-player granularity that LineupChangeEvent aggregates.
+    """
+    game_id: str
+    period: int
+    clock: str
+    team_id: int
+    team_tricode: str
+    player_id: str
+    player_name: str
+    sub_type: str                   # "in" or "out"
+    home_score: int
+    away_score: int
+    observed_at: float
+
+
+@dataclass(frozen=True)
+class ReplayResult:
+    """Result of replaying a single game's events.
+
+    Shared between ESPNReplayer and SnapshotReplayer.
+    """
+    game_id: str
+    events: list                    # Any event instances
+    snapshot_count: int             # Snapshots or events processed
+    duration_seconds: float         # Wall-clock time elapsed during replay
