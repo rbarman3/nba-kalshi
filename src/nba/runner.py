@@ -16,25 +16,64 @@ import logging
 import os
 from pathlib import Path
 
-from pipeline.models import FeedHealthEvent, LineupChangeEvent
+from pipeline.models import (
+    FeedHealthEvent,
+    FoulEvent,
+    LineupChangeEvent,
+    PeriodEvent,
+    ScoreChangeEvent,
+    TimeoutEvent,
+    TurnoverEvent,
+)
 from pipeline.processor import NBAProcessor
 from pipeline.store import SnapshotStore
 from pipeline.transport import NBATransport
-from pipeline.watchdog import FeedWatchdog
 from nba.live_service import get_live_scoreboard
+
+try:
+    from pipeline.watchdog import FeedWatchdog
+    _WATCHDOG_AVAILABLE = True
+except ImportError:
+    _WATCHDOG_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
 async def _log_events(event_queue: asyncio.Queue) -> None:
-    """Log LineupChangeEvents from the event queue until cancelled."""
+    """Log pipeline events from the event queue until cancelled."""
     while True:
         event = await event_queue.get()
         if isinstance(event, LineupChangeEvent):
             logger.info(
-                f"Lineup change: game={event.game_id} period={event.period} "
+                f"[LINEUP]  game={event.game_id} period={event.period} "
                 f"clock={event.clock} in={len(event.players_in)} out={len(event.players_out)}"
+            )
+        elif isinstance(event, ScoreChangeEvent):
+            logger.info(
+                f"[SCORE]   game={event.game_id} period={event.period} "
+                f"clock={event.clock} home={event.home_score} away={event.away_score}"
+            )
+        elif isinstance(event, FoulEvent):
+            logger.info(
+                f"[FOUL]    game={event.game_id} period={event.period} "
+                f"clock={event.clock} {event.team_tricode} {event.player_name} "
+                f"fouls={event.curr_fouls}"
+            )
+        elif isinstance(event, TimeoutEvent):
+            logger.info(
+                f"[TIMEOUT] game={event.game_id} period={event.period} "
+                f"clock={event.clock} {event.team_tricode} "
+                f"remaining={event.curr_timeouts}"
+            )
+        elif isinstance(event, TurnoverEvent):
+            logger.info(
+                f"[TOVER]   game={event.game_id} period={event.period} "
+                f"clock={event.clock} {event.team_tricode} {event.player_name}"
+            )
+        elif isinstance(event, PeriodEvent):
+            logger.info(
+                f"[PERIOD]  game={event.game_id} {event.prev_period}→{event.curr_period}"
             )
 
 
@@ -75,18 +114,20 @@ async def run_pipeline(game_ids: list[str]) -> None:
         store=store,
     )
     processor = NBAProcessor(in_queue=raw_queue, out_queue=event_queue)
-    watchdog = FeedWatchdog(transport=transport, health_queue=health_queue)
 
     logger.info(f"Starting pipeline with {len(game_ids)} game(s)")
 
-    # Run all layers concurrently
-    await asyncio.gather(
+    tasks = [
         transport.run(),
         processor.run(),
-        watchdog.run(),
         _log_events(event_queue),
-        _log_health(health_queue),
-    )
+    ]
+
+    if _WATCHDOG_AVAILABLE:
+        watchdog = FeedWatchdog(transport=transport, health_queue=health_queue)
+        tasks += [watchdog.run(), _log_health(health_queue)]
+
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:
