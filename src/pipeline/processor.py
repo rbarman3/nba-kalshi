@@ -1,16 +1,30 @@
-"""Lineup diffing and score change detection.
+"""Lineup diffing, score change detection, and play-by-play action parsing.
 
 Consumes RawSnapshot from transport layer.
 Diffs consecutive snapshots to extract substitution and score change events.
-Emits LineupChangeEvent and ScoreChangeEvent downstream.
+Parses game.actions[] to emit fine-grained play events.
+Emits LineupChangeEvent, ScoreChangeEvent, and action events downstream.
 """
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Any
 
-from .models import RawSnapshot, LineupChangeEvent, ScoreChangeEvent
+from .models import (
+    RawSnapshot,
+    LineupChangeEvent,
+    ScoreChangeEvent,
+    ScoringPlayEvent,
+    FoulEvent,
+    TimeoutEvent,
+    TurnoverEvent,
+    PeriodEvent,
+    SubstitutionEvent,
+)
 
 logger = logging.getLogger(__name__)
+
+# actionType values that produce ScoringPlayEvent
+_SCORING_TYPES = frozenset({"2pt", "3pt", "freethrow"})
 
 
 class NBAProcessor:
@@ -25,6 +39,7 @@ class NBAProcessor:
         self.out_queue = out_queue
         self._state: dict[str, dict[str, frozenset[str]]] = {}
         self._score_state: dict[str, dict[str, int]] = {}
+        self._action_state: dict[str, int] = {}  # game_id → last processed actionNumber
 
     async def run(self) -> None:
         """Consume snapshots forever. Never returns."""
@@ -64,6 +79,18 @@ class NBAProcessor:
                 await self.out_queue.put(score_event)
 
         self._score_state[game_id] = curr_scores
+
+        # Action parsing — emit fine-grained play events from game.actions[]
+        last_action = self._action_state.get(game_id, -1)
+        new_actions = extract_new_actions(snapshot, last_action)
+
+        for action in new_actions:
+            event = classify_action(game_id, action, snapshot.fetched_at)
+            if event is not None:
+                await self.out_queue.put(event)
+
+        if new_actions:
+            self._action_state[game_id] = new_actions[-1].get("actionNumber", last_action)
 
 
 def extract_lineup(snapshot: RawSnapshot) -> dict[str, frozenset[str]]:
@@ -181,3 +208,149 @@ def diff_scores(
         clock=clock,
         observed_at=snapshot.fetched_at,
     )
+
+
+def extract_new_actions(snapshot: RawSnapshot, last_action_number: int) -> list[dict]:
+    """Extract actions from snapshot with actionNumber > last_action_number.
+
+    Actions are monotonically numbered by the NBA CDN — comparing against the
+    highest previously-seen number ensures each action is emitted exactly once
+    across consecutive snapshot polls.
+
+    Args:
+        snapshot: RawSnapshot containing the full boxscore payload.
+        last_action_number: Highest actionNumber already processed (-1 = none).
+
+    Returns:
+        List of new action dicts sorted ascending by actionNumber.
+    """
+    actions = snapshot.payload.get("game", {}).get("actions", [])
+    new_actions = [
+        a for a in actions
+        if a.get("actionNumber", 0) > last_action_number
+    ]
+    return sorted(new_actions, key=lambda a: a.get("actionNumber", 0))
+
+
+def classify_action(game_id: str, action: dict, observed_at: float) -> Optional[Any]:
+    """Convert a single NBA CDN action dict into a typed event.
+
+    Handles: scoring plays, fouls, timeouts, turnovers, period markers,
+    and substitutions. Unknown action types are silently skipped.
+
+    Args:
+        game_id: Game identifier.
+        action: Action dict from game.actions[].
+        observed_at: Unix timestamp when the snapshot was fetched.
+
+    Returns:
+        A typed event dataclass, or None if actionType is unrecognized.
+    """
+    action_type = action.get("actionType", "")
+    action_number = action.get("actionNumber", 0)
+    period = action.get("period", 0)
+    clock = action.get("clock", "PT00M00.00S")
+    home_score = int(action.get("scoreHome") or 0)
+    away_score = int(action.get("scoreAway") or 0)
+    description = action.get("description", "")
+    team_id = int(action.get("teamId") or 0)
+    player_id = int(action.get("personId") or 0)
+    sub_type = action.get("subType", "")
+
+    if action_type in _SCORING_TYPES and action.get("shotResult") == "Made":
+        raw_points = action.get("pointsTotal")
+        if raw_points is not None:
+            score_value = int(raw_points)
+        else:
+            score_value = {"2pt": 2, "3pt": 3, "freethrow": 1}.get(action_type, 2)
+        return ScoringPlayEvent(
+            game_id=game_id,
+            action_number=action_number,
+            period=period,
+            clock=clock,
+            home_score=home_score,
+            away_score=away_score,
+            score_value=score_value,
+            team_id=team_id,
+            player_id=player_id,
+            action_type=action_type,
+            sub_type=sub_type,
+            description=description,
+            observed_at=observed_at,
+        )
+
+    if action_type == "foul":
+        return FoulEvent(
+            game_id=game_id,
+            action_number=action_number,
+            period=period,
+            clock=clock,
+            home_score=home_score,
+            away_score=away_score,
+            team_id=team_id,
+            player_id=player_id,
+            foul_type=sub_type or "personal",
+            description=description,
+            observed_at=observed_at,
+        )
+
+    if action_type == "timeout":
+        return TimeoutEvent(
+            game_id=game_id,
+            action_number=action_number,
+            period=period,
+            clock=clock,
+            home_score=home_score,
+            away_score=away_score,
+            team_id=team_id,
+            timeout_type=sub_type or "full",
+            description=description,
+            observed_at=observed_at,
+        )
+
+    if action_type == "turnover":
+        return TurnoverEvent(
+            game_id=game_id,
+            action_number=action_number,
+            period=period,
+            clock=clock,
+            home_score=home_score,
+            away_score=away_score,
+            team_id=team_id,
+            player_id=player_id,
+            turnover_type=sub_type or "bad pass",
+            description=description,
+            observed_at=observed_at,
+        )
+
+    if action_type == "period":
+        event_type = "start" if sub_type.lower() == "start" else "end"
+        return PeriodEvent(
+            game_id=game_id,
+            action_number=action_number,
+            period=period,
+            clock=clock,
+            home_score=home_score,
+            away_score=away_score,
+            event_type=event_type,
+            description=description,
+            observed_at=observed_at,
+        )
+
+    if action_type == "substitution":
+        return SubstitutionEvent(
+            game_id=game_id,
+            action_number=action_number,
+            period=period,
+            clock=clock,
+            home_score=home_score,
+            away_score=away_score,
+            team_id=team_id,
+            player_id=player_id,
+            sub_type=sub_type.lower() or "in",
+            description=description,
+            observed_at=observed_at,
+        )
+
+    logger.debug("Skipping unrecognized action type: %s", action_type)
+    return None
