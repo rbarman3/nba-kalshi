@@ -23,7 +23,8 @@ from datetime import datetime
 
 import httpx
 
-from pipeline.models import RawSnapshot
+from pipeline.api_stats import ApiStatsCollector
+from pipeline.models import PollResult, RawSnapshot
 from pipeline.store import SnapshotStore
 
 logger = logging.getLogger(__name__)
@@ -86,13 +87,32 @@ class NBATransport:
         queue: asyncio.Queue,
         poll_interval_range: tuple[float, float] = (0.6, 1.2),
         store: SnapshotStore | None = None,
+        stats: ApiStatsCollector | None = None,
     ) -> None:
         self.game_ids = game_ids
         self.queue = queue
         self.poll_interval_range = poll_interval_range
         self.store = store
+        self.stats = stats
         self._poll_states: dict[str, _PollState] = {gid: _PollState() for gid in game_ids}
         self.cache: dict[str, RawSnapshot] = {}
+
+    def _emit_stats(
+        self,
+        game_id: str,
+        status_code: int,
+        error_type: str | None,
+        elapsed_ms: float,
+    ) -> None:
+        """Record a poll result if stats collector is attached."""
+        if self.stats is not None:
+            self.stats.record(PollResult(
+                game_id=game_id,
+                status_code=status_code,
+                error_type=error_type,
+                response_time_ms=elapsed_ms,
+                timestamp=time.time(),
+            ))
 
     async def run(self) -> None:
         """Poll all games concurrently forever. Never returns."""
@@ -114,9 +134,13 @@ class NBATransport:
                 return
 
         url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+        t0 = time.time()
         try:
             resp = await client.get(url)
+            elapsed_ms = (time.time() - t0) * 1000
             state.last_polled = time.time()
+
+            self._emit_stats(game_id, resp.status_code, None, elapsed_ms)
 
             if resp.status_code == 403:
                 state.status = GameStatus.NOT_STARTED
@@ -155,4 +179,6 @@ class NBATransport:
                 await self.store.persist(snapshot)
 
         except Exception as e:
+            elapsed_ms = (time.time() - t0) * 1000
+            self._emit_stats(game_id, -1, type(e).__name__, elapsed_ms)
             logger.error(f"Failed to fetch game {game_id}: {e}")

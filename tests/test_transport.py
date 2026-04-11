@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from pipeline.models import RawSnapshot
+from pipeline.api_stats import ApiStatsCollector
+from pipeline.models import PollResult, RawSnapshot
 from pipeline.transport import GameStatus, NBATransport, NOT_STARTED_POLL_INTERVAL, _hash_payload
 
 
@@ -314,3 +315,120 @@ class TestDeduplication:
         await transport._fetch_one(game_id, self._make_mock_client(self.PAYLOAD))
 
         assert transport._poll_states[game_id].last_payload_hash == _hash_payload(self.PAYLOAD)
+
+
+class TestStatsEmission:
+    """Test that transport emits PollResult to the stats collector."""
+
+    GAME_ID = "0022400001"
+    LIVE_PAYLOAD = {"game": {"gameStatus": 2, "score": 10}}
+
+    def _make_mock_client(self, status_code: int, payload: dict | None = None) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = payload or {}
+        client = MagicMock()
+        client.get = AsyncMock(return_value=resp)
+        return client
+
+    def _make_error_client(self, error: Exception) -> MagicMock:
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=error)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_emits_poll_result_on_200(self):
+        stats = ApiStatsCollector(base_dir="/tmp/unused")
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=stats,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert len(stats._buffer) == 1
+        assert stats._buffer[0].status_code == 200
+        assert stats._buffer[0].game_id == self.GAME_ID
+        assert stats._buffer[0].error_type is None
+
+    @pytest.mark.asyncio
+    async def test_emits_poll_result_on_403(self):
+        stats = ApiStatsCollector(base_dir="/tmp/unused")
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=stats,
+        )
+        client = self._make_mock_client(403)
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert len(stats._buffer) == 1
+        assert stats._buffer[0].status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_emits_poll_result_on_exception(self):
+        stats = ApiStatsCollector(base_dir="/tmp/unused")
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=stats,
+        )
+        client = self._make_error_client(httpx.TimeoutException("timed out"))
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert len(stats._buffer) == 1
+        assert stats._buffer[0].status_code == -1
+        assert stats._buffer[0].error_type == "TimeoutException"
+
+    @pytest.mark.asyncio
+    async def test_no_emit_when_stats_is_none(self):
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=None,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        # Should not raise
+        await transport._fetch_one(self.GAME_ID, client)
+
+    @pytest.mark.asyncio
+    async def test_no_emit_for_final_game(self):
+        stats = ApiStatsCollector(base_dir="/tmp/unused")
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=stats,
+        )
+        transport._poll_states[self.GAME_ID].status = GameStatus.FINAL
+
+        client = MagicMock()
+        client.get = AsyncMock()
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert len(stats._buffer) == 0
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_emit_for_throttled_not_started(self):
+        stats = ApiStatsCollector(base_dir="/tmp/unused")
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=stats,
+        )
+        transport._poll_states[self.GAME_ID].status = GameStatus.NOT_STARTED
+        transport._poll_states[self.GAME_ID].last_polled = time.time()
+
+        client = MagicMock()
+        client.get = AsyncMock()
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert len(stats._buffer) == 0
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_response_time_positive(self):
+        stats = ApiStatsCollector(base_dir="/tmp/unused")
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), stats=stats,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert stats._buffer[0].response_time_ms > 0

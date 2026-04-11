@@ -183,6 +183,20 @@ class SubstitutionEvent:
 
 
 @dataclass(frozen=True)
+class PollResult:
+    """Metadata from a single transport HTTP poll attempt.
+
+    Emitted by NBATransport on every HTTP call (or errored poll).
+    Consumed by ApiStatsCollector for daily stats aggregation and SLO tracking.
+    """
+    game_id: str
+    status_code: int         # HTTP status, or -1 for network/timeout exceptions
+    error_type: str | None   # Exception class name, or None on HTTP response
+    response_time_ms: float  # Wall-clock ms for the HTTP round-trip
+    timestamp: float         # time.time() when poll completed
+
+
+@dataclass(frozen=True)
 class ReplayResult:
     """Result of replaying a single game's events.
 

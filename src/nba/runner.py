@@ -8,6 +8,7 @@ and logs events/health until interrupted (Ctrl+C).
 Environment variables:
   SNAPSHOT_STORE_ENABLED  — "true" to persist snapshots to disk (default: "false")
   SNAPSHOT_STORE_DIR      — base directory for snapshots (default: "data/snapshots")
+  API_STATS_DIR           — base directory for API stats (default: "data/api_stats")
   PIPELINE_POLL_MIN       — min poll interval seconds (default: "0.6")
   PIPELINE_POLL_MAX       — max poll interval seconds (default: "1.2")
 """
@@ -27,6 +28,7 @@ from pipeline.models import (
     TimeoutEvent,
     TurnoverEvent,
 )
+from pipeline.api_stats import ApiStatsCollector
 from pipeline.processor import NBAProcessor
 from pipeline.store import SnapshotStore
 from pipeline.transport import NBATransport
@@ -120,12 +122,18 @@ async def run_pipeline(game_ids: list[str]) -> None:
     poll_min = float(os.getenv("PIPELINE_POLL_MIN", "0.6"))
     poll_max = float(os.getenv("PIPELINE_POLL_MAX", "1.2"))
 
+    # API stats collector — always enabled for operational visibility
+    stats_dir = os.getenv("API_STATS_DIR", "data/api_stats")
+    stats = ApiStatsCollector(base_dir=stats_dir)
+    logger.info(f"API stats will be written to {stats_dir}")
+
     # Wire layers
     transport = NBATransport(
         game_ids=game_ids,
         queue=raw_queue,
         poll_interval_range=(poll_min, poll_max),
         store=store,
+        stats=stats,
     )
     processor = NBAProcessor(in_queue=raw_queue, out_queue=event_queue)
 
@@ -134,6 +142,7 @@ async def run_pipeline(game_ids: list[str]) -> None:
     tasks = [
         transport.run(),
         processor.run(),
+        stats.run(),
         _log_events(event_queue),
     ]
 
