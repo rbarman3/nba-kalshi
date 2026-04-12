@@ -54,7 +54,7 @@ class TestNBAProcessorFirstSnapshot:
         await in_q.put(snapshot)
         await processor.run_once()
 
-        assert "game1" in processor._state
+        assert "game1" in processor._lineup_state
 
 
 class TestNBAProcessorSubstitution:
@@ -124,8 +124,8 @@ class TestNBAProcessorMultiGame:
         await in_q.put(make_snapshot("game2", ["p5", "p6"], ["p7", "p8"]))
         await processor.run_once()
 
-        assert "game1" in processor._state
-        assert "game2" in processor._state
+        assert "game1" in processor._lineup_state
+        assert "game2" in processor._lineup_state
         assert out_q.empty()
 
     @pytest.mark.asyncio
@@ -143,7 +143,10 @@ class TestNBAProcessorMultiGame:
         await in_q.put(make_snapshot("game1", ["p1", "p9"], ["p3", "p4"]))
         await processor.run_once()
 
-        assert not out_q.empty()
-        event = out_q.get_nowait()
-        assert event.game_id == "game1"
-        assert out_q.empty()
+        # Processor emits LineupChangeEvent + per-player SubstitutionEvents
+        # for a single lineup change. All should belong to game1.
+        events = []
+        while not out_q.empty():
+            events.append(out_q.get_nowait())
+        assert len(events) >= 1
+        assert all(e.game_id == "game1" for e in events)
