@@ -1,18 +1,24 @@
 # NBA → Kalshi Betting Pipeline
 
-An automated pipeline that polls live NBA game data, analyzes on-court lineups, and places bets via the [Kalshi](https://kalshi.com) prediction market API.
+An automated pipeline that polls live NBA game data, detects player substitutions in real time, and trades Kalshi prediction markets on the mispricing window between a substitution and market repricing.
 
 ## Overview
 
 ```
-NBA Live API  ──►  Lineup Polling  ──►  Signal Analysis  ──►  Kalshi Orders
-(nba_api)          (src/nba/)           (src/analysis/)        (src/kalshi/)
+get_live_scoreboard()
+        │ game_ids
+        ▼
+NBATransport ──► raw_queue ──► NBAProcessor ──► event_queue ──► (future: strategy)
+        │
+        └──► SnapshotStore (JSONL → Parquet on game FINAL)
 ```
 
-The system runs in two stages:
+The system has four planned layers:
 
-1. **NBA side (built)** — continuously polls live scoreboard and per-game lineups via `nba_api`, exposes data through a FastAPI HTTP server and a Typer CLI.
-2. **Kalshi side (in progress)** — consumes lineup signals, finds matching NBA markets on Kalshi, and places/manages orders.
+1. **Market data feed (built)** — polls NBA CDN boxscore endpoint, diffs consecutive snapshots, emits `LineupChangeEvent` when player substitutions occur. Persists snapshots to JSONL during live games, compacts to Parquet when game ends.
+2. **Strategy (planned)** — consumes lineup change events, maps to Kalshi markets, determines edge and signal.
+3. **Execution (planned)** — places and manages Kalshi orders.
+4. **Backtesting (planned)** — replays persisted snapshots through strategy layer.
 
 ---
 
@@ -20,56 +26,49 @@ The system runs in two stages:
 
 ```
 src/
-  nba/              # Data ingestion — live scores, lineups, player lookup
-    models.py         # Frozen dataclasses: GameSummary, Player, PlayerOnCourt, Team
-    live_service.py   # get_live_scoreboard(), get_live_lineup(game_id)
-    player_service.py # find_players_by_name(), find_players_by_team()
-    server.py         # FastAPI app (4 HTTP endpoints) + uvicorn entry point
-    cli.py            # Typer CLI: scores, lineup, watch
-    poller.py         # Background daemon thread used by `watch`
+  pipeline/             # Market data feed (Layer 1 + 2)
+    transport.py        # NBATransport — async CDN polling, jitter, dedup, game state machine
+    processor.py        # NBAProcessor — lineup diff, LineupChangeEvent emission
+    store.py            # SnapshotStore — JSONL ingestion + Parquet compaction
+    models.py           # RawSnapshot, LineupChangeEvent, FeedHealthEvent
 
-  kalshi/           # Kalshi API integration — SEE CONTRIBUTING BELOW
-    models.py         # Kalshi market, contract, order dataclasses
-    client.py         # Authenticated HTTP client (REST + WebSocket)
-    markets.py        # Discover and filter NBA-related markets
-    orders.py         # Place, cancel, and track orders
+  nba/                  # NBA data service (scores, player lookup, HTTP server, runner)
+    live_service.py     # get_live_scoreboard()
+    player_service.py   # find_players_by_name(), find_players_by_team()
+    server.py           # FastAPI: GET /scoreboard, /players, /players/team
+    cli.py              # Typer CLI: scores command
+    runner.py           # Pipeline orchestrator — wires transport + processor + store
+    models.py           # GameSummary, Player, Team
 
-  analysis/         # Signal layer — bridges NBA data and Kalshi bets
-    signals.py        # Lineup → betting signal logic
-    filters.py        # Market eligibility filters (spread, volume, timing)
+  kalshi/               # Kalshi integration — stub only, not yet implemented
+    __init__.py
 
-tests/
-  test_player_service.py                  # Unit — player lookup (mocked)
-  test_roster_helper.py                   # Unit — _get_roster_for_team (mocked)
-  test_live_service.py                    # Unit — scoreboard/lineup parsing (mocked)
-  test_poller.py                          # Unit — Poller class
-  test_cli.py                             # Unit — CLI commands (mocked)
-  test_player_to_service_integration.py   # Integration — player service vs real API
-  test_cli_integration.py                 # Integration — CLI via CliRunner
-  test_server_integration.py             # Integration — HTTP endpoints vs real NBA API
-  kalshi/                                 # Kalshi test suite (to be added)
-  analysis/                               # Analysis test suite (to be added)
+tests/                  # Unit + integration tests
+scripts/
+  debug_transport.py    # Ad-hoc transport debugging
+docs/
+  DATA_FEED_GAPS.md     # Market data feed gap analysis
 ```
 
 ---
 
-## NBA Side (Built)
-
-### Install
+## Install
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### CLI
+## Run Pipeline
 
 ```bash
-nba-scores scores                        # Today's live scoreboard
-nba-scores lineup <game_id>             # On-court players for a game
-nba-scores watch [game_id] [--interval 30]  # Auto-refresh lineup
+# Run the full market data feed against today's live games
+PYTHONPATH=src python3 -m nba.runner
+
+# With snapshot persistence enabled
+SNAPSHOT_STORE_ENABLED=true PYTHONPATH=src python3 -m nba.runner
 ```
 
-### HTTP Server
+## HTTP Server
 
 ```bash
 nba-server
@@ -80,85 +79,95 @@ uvicorn nba.server:app --reload --port 8000
 | Endpoint | Description |
 |----------|-------------|
 | `GET /scoreboard` | Today's games with live scores |
-| `GET /lineup/{game_id}` | On-court players for a live game |
 | `GET /players?name=` | Search players by name |
 | `GET /players/team?name=` | Roster by team full name |
 
 OpenAPI docs at `http://localhost:8000/docs`.
 
-### Run Tests
+## CLI
+
+```bash
+nba-scores scores    # Today's live scoreboard
+```
+
+## Run Tests
 
 ```bash
 # All tests with coverage
 PYTHONPATH=src python3 -m pytest
 
+# Single test
+PYTHONPATH=src python3 -m pytest tests/test_processor.py::TestDiffLineups::test_simultaneous_in_out -v
+
 # Integration tests only (requires network)
-PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_player_to_service_integration.py tests/test_cli_integration.py -v
+PYTHONPATH=src python3 -m pytest tests/test_server_integration.py tests/test_player_to_service_integration.py -v
 ```
 
 ---
 
-## Kalshi Side (In Progress)
+## Environment Variables
 
-### Architecture
-
-```
-src/kalshi/
-  client.py    ──►  Kalshi REST API  (auth, rate limiting, retries)
-  markets.py   ──►  Filter NBA markets by event type, timing, liquidity
-  orders.py    ──►  Place YES/NO orders, track fills, cancel stale orders
-  models.py    ──►  KalshiMarket, KalshiOrder, OrderResult dataclasses
-
-src/analysis/
-  signals.py   ──►  Converts lineup data → BettingSignal(market_ticker, side, size)
-  filters.py   ──►  Guards: min spread, min volume, game clock constraints
-```
-
-### Contributing — Kalshi Side
-
-See stub files in `src/kalshi/` and `src/analysis/` for interfaces to implement.
-
-**Environment variables required:**
-
-```bash
-KALSHI_API_KEY=your_api_key_here
-KALSHI_API_KEY_ID=your_key_id_here
-KALSHI_BASE_URL=https://trading-api.kalshi.com/trade-api/v2  # or demo URL
-```
-
-**Kalshi API docs:** https://trading-api.kalshi.com/trade-api/v2/openapi.json
-
-**Key contracts to implement:**
-
-1. `KalshiClient` — authenticated requests, handle 429 rate limits, surface errors as typed exceptions
-2. `find_nba_markets(game_id)` — given an NBA game_id, return matching Kalshi market tickers
-3. `BettingSignal` — output of the analysis layer, consumed by `orders.py`
-4. `place_order(signal)` — translate a signal into a Kalshi order, return fill confirmation
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SNAPSHOT_STORE_ENABLED` | `"false"` | Enable snapshot persistence to disk |
+| `SNAPSHOT_STORE_DIR` | `"data/snapshots"` | Base directory for JSONL/Parquet files |
+| `PIPELINE_POLL_MIN` | `"0.6"` | Minimum poll interval (seconds) |
+| `PIPELINE_POLL_MAX` | `"1.2"` | Maximum poll interval (seconds) |
+| `NBA_CDN_USER_AGENT` | Chrome 145 UA | Override Akamai User-Agent fingerprint |
+| `NBA_CDN_SEC_CH_UA` | Chrome 145 | Override Sec-Ch-Ua header |
 
 ---
 
-## End-to-End Data Flow
+## Pipeline Architecture
 
-```
-Poller (30s interval)
-  └─► get_live_lineup(game_id)          # src/nba/live_service.py
-        │
-        ▼
-  generate_signals(home, away)          # src/analysis/signals.py
-        │  returns list[BettingSignal]
-        ▼
-  find_nba_markets(game_id)            # src/kalshi/markets.py
-        │  returns matching tickers
-        ▼
-  place_order(signal, ticker)          # src/kalshi/orders.py
-        │
-        ▼
-  Kalshi order confirmation
-```
+### Layer 1 — Transport (`src/pipeline/transport.py`)
+
+`NBATransport` polls the NBA CDN boxscore endpoint with jittered intervals (0.6–1.2s). Emits `RawSnapshot` onto an `asyncio.Queue`.
+
+- Polls `https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json`
+- Game state machine: UNKNOWN → NOT_STARTED (403) → LIVE (gameStatus==2) → FINAL (gameStatus==3)
+- Hash-based deduplication — skips unchanged payloads
+- Multi-game concurrency via `asyncio.gather`
+- On game FINAL: triggers Parquet compaction via `SnapshotStore.compact()`
+
+### Layer 2 — Processor (`src/pipeline/processor.py`)
+
+`NBAProcessor` diffs consecutive `RawSnapshot` objects to detect lineup changes.
+
+- Reads `player.oncourt` ("1" = on court, "0" = bench) from each player in the payload
+- First snapshot per game initializes state without emitting
+- Subsequent snapshots are diffed — emits `LineupChangeEvent` only when players change
+
+### Persistence — Store (`src/pipeline/store.py`)
+
+`SnapshotStore` persists snapshots for backtesting replay.
+
+- **Live games:** Appends to `data/snapshots/{YYYY-MM-DD}/{game_id}.jsonl`
+- **Game over:** Compacts JSONL → Parquet with zstd compression, deletes JSONL
+- **Loading:** Prefers Parquet if available, falls back to JSONL
+
+### Runner (`src/nba/runner.py`)
+
+Discovers today's games via `get_live_scoreboard()`, wires all layers, and runs them concurrently.
 
 ---
 
-## Mock Targets (for contributors)
+## What's Built vs Planned
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| `NBATransport` | Built | Async CDN polling, jitter, dedup, game state machine |
+| `NBAProcessor` | Built | Lineup diff engine, emits `LineupChangeEvent` |
+| `SnapshotStore` | Built | JSONL ingestion + Parquet compaction |
+| Pipeline runner | Built | Discovers games, wires layers, runs concurrently |
+| `TradingStrategy` | Planned | Consume `LineupChangeEvent`, generate trade signals |
+| `KalshiClient` | Planned | Authenticated HTTP client for Kalshi API |
+| `OrderManager` | Planned | Place and manage Kalshi orders |
+| `FeedWatchdog` | Planned | Feed health monitoring (model exists, implementation removed) |
+
+---
+
+## Mock Targets
 
 When writing unit tests, patch at the **module level** where the name is used:
 
@@ -169,6 +178,4 @@ When writing unit tests, patch at the **module level** where the name is used:
 | `_get_roster_for_team` | `nba.player_service._get_roster_for_team` |
 | `CommonTeamRoster` | `nba.player_service.commonteamroster.CommonTeamRoster` |
 | `ScoreBoard` | `nba.live_service.live_scoreboard.ScoreBoard` |
-| `BoxScore` | `nba.live_service.live_boxscore.BoxScore` |
-| CLI service calls | `nba.cli.get_live_scoreboard`, `nba.cli.get_live_lineup` |
-| Kalshi HTTP calls | `kalshi.client.KalshiClient.get`, `kalshi.client.KalshiClient.post` |
+| `httpx.AsyncClient` | `pipeline.transport.httpx.AsyncClient` |
