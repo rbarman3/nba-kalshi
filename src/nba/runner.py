@@ -30,6 +30,7 @@ from pipeline.models import (
 )
 from pipeline.api_stats import ApiStatsCollector
 from pipeline.processor import NBAProcessor
+from pipeline.signal import FeedQualitySignal
 from pipeline.store import SnapshotStore
 from pipeline.transport import NBATransport
 from nba.live_service import get_live_scoreboard
@@ -127,6 +128,9 @@ async def run_pipeline(game_ids: list[str]) -> None:
     stats = ApiStatsCollector(base_dir=stats_dir)
     logger.info(f"API stats will be written to {stats_dir}")
 
+    # Feed quality signal — real-time confidence scoring for strategy layer
+    signal = FeedQualitySignal()
+
     # Wire layers
     transport = NBATransport(
         game_ids=game_ids,
@@ -134,6 +138,7 @@ async def run_pipeline(game_ids: list[str]) -> None:
         poll_interval_range=(poll_min, poll_max),
         store=store,
         stats=stats,
+        signal=signal,
     )
     processor = NBAProcessor(in_queue=raw_queue, out_queue=event_queue)
 

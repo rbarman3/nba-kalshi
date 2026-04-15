@@ -197,6 +197,16 @@ class PollResult:
 
 
 @dataclass(frozen=True)
+class WindowStats:
+    """Rolling-window poll metrics for a single game. Queryable by strategy."""
+    success_rate: float       # 0.0–1.0
+    latency_p50_ms: float
+    latency_p95_ms: float
+    poll_count: int
+    window_seconds: float     # actual window duration
+
+
+@dataclass(frozen=True)
 class ReplayResult:
     """Result of replaying a single game's events.
 

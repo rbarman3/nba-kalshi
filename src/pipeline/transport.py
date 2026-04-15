@@ -25,6 +25,7 @@ import httpx
 
 from pipeline.api_stats import ApiStatsCollector
 from pipeline.models import PollResult, RawSnapshot
+from pipeline.signal import FeedQualitySignal
 from pipeline.store import SnapshotStore
 
 logger = logging.getLogger(__name__)
@@ -88,12 +89,14 @@ class NBATransport:
         poll_interval_range: tuple[float, float] = (0.6, 1.2),
         store: SnapshotStore | None = None,
         stats: ApiStatsCollector | None = None,
+        signal: FeedQualitySignal | None = None,
     ) -> None:
         self.game_ids = game_ids
         self.queue = queue
         self.poll_interval_range = poll_interval_range
         self.store = store
         self.stats = stats
+        self.signal = signal
         self._poll_states: dict[str, _PollState] = {gid: _PollState() for gid in game_ids}
         self.cache: dict[str, RawSnapshot] = {}
 
@@ -104,15 +107,20 @@ class NBATransport:
         error_type: str | None,
         elapsed_ms: float,
     ) -> None:
-        """Record a poll result if stats collector is attached."""
+        """Record a poll result to stats collector and quality signal."""
+        if self.stats is None and self.signal is None:
+            return
+        result = PollResult(
+            game_id=game_id,
+            status_code=status_code,
+            error_type=error_type,
+            response_time_ms=elapsed_ms,
+            timestamp=time.time(),
+        )
         if self.stats is not None:
-            self.stats.record(PollResult(
-                game_id=game_id,
-                status_code=status_code,
-                error_type=error_type,
-                response_time_ms=elapsed_ms,
-                timestamp=time.time(),
-            ))
+            self.stats.record(result)
+        if self.signal is not None:
+            self.signal.on_poll(result)
 
     async def run(self) -> None:
         """Poll all games concurrently forever. Never returns."""
@@ -177,6 +185,8 @@ class NBATransport:
             await self.queue.put(snapshot)
             if self.store:
                 await self.store.persist(snapshot)
+            if self.signal is not None:
+                self.signal.on_snapshot(game_id, snapshot.fetched_at)
 
         except Exception as e:
             elapsed_ms = (time.time() - t0) * 1000

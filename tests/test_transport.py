@@ -8,6 +8,7 @@ import pytest
 
 from pipeline.api_stats import ApiStatsCollector
 from pipeline.models import PollResult, RawSnapshot
+from pipeline.signal import FeedQualitySignal
 from pipeline.transport import GameStatus, NBATransport, NOT_STARTED_POLL_INTERVAL, _hash_payload
 
 
@@ -432,3 +433,69 @@ class TestStatsEmission:
         await transport._fetch_one(self.GAME_ID, client)
 
         assert stats._buffer[0].response_time_ms > 0
+
+
+class TestSignalIntegration:
+    """Test that transport calls FeedQualitySignal hooks."""
+
+    GAME_ID = "0022400001"
+    LIVE_PAYLOAD = {"game": {"gameStatus": 2, "score": 10}}
+    CHANGED_PAYLOAD = {"game": {"gameStatus": 2, "score": 11}}
+
+    def _make_mock_client(self, status_code: int, payload: dict | None = None) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = payload or {}
+        client = MagicMock()
+        client.get = AsyncMock(return_value=resp)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_signal_on_poll_called_on_200(self):
+        signal = FeedQualitySignal()
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), signal=signal,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert len(signal._states[self.GAME_ID].polls) == 1
+        assert signal._states[self.GAME_ID].polls[0][1] == 200
+
+    @pytest.mark.asyncio
+    async def test_signal_on_snapshot_called_on_new(self):
+        signal = FeedQualitySignal()
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), signal=signal,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        await transport._fetch_one(self.GAME_ID, client)
+
+        assert signal._states[self.GAME_ID].last_snapshot_at > 0
+
+    @pytest.mark.asyncio
+    async def test_signal_on_snapshot_not_called_on_duplicate(self):
+        signal = FeedQualitySignal()
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), signal=signal,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        await transport._fetch_one(self.GAME_ID, client)
+        first_snapshot_at = signal._states[self.GAME_ID].last_snapshot_at
+
+        # Same payload — duplicate, should NOT call on_snapshot again
+        await transport._fetch_one(self.GAME_ID, client)
+        assert signal._states[self.GAME_ID].last_snapshot_at == first_snapshot_at
+
+    @pytest.mark.asyncio
+    async def test_no_signal_when_none(self):
+        transport = NBATransport(
+            game_ids=[self.GAME_ID], queue=asyncio.Queue(), signal=None,
+        )
+        client = self._make_mock_client(200, self.LIVE_PAYLOAD)
+
+        # Should not raise
+        await transport._fetch_one(self.GAME_ID, client)
