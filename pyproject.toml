@@ -30,6 +30,7 @@ dev = [
 nba-scores = "nba.cli:app"
 nba-server = "nba.server:main"
 nba-pipeline = "nba.runner:main"
+nba-replay = "pipeline.replay_cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
