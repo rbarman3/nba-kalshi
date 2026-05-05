@@ -12,7 +12,9 @@ Diffs consecutive snapshots to detect:
   - Substitutions (per-player in/out with team context)
 """
 import asyncio
+import dataclasses
 import logging
+import time
 from typing import Optional
 
 from .models import (
@@ -60,6 +62,23 @@ class NBAProcessor:
         snapshot = await self.in_queue.get()
         await self._process(snapshot)
 
+    def _stamp(self, event, snapshot: RawSnapshot):
+        """Stamp event with cdn_observed_at (passthrough) and emitted_at (now).
+
+        Returns a new immutable event. No-op if event lacks these fields (defensive).
+        """
+        try:
+            return dataclasses.replace(
+                event,
+                cdn_observed_at=snapshot.cdn_observed_at,
+                emitted_at=time.time(),
+            )
+        except TypeError:
+            return event
+
+    async def _emit(self, event, snapshot: RawSnapshot) -> None:
+        await self.out_queue.put(self._stamp(event, snapshot))
+
     async def _process(self, snapshot: RawSnapshot) -> None:
         game_id = snapshot.game_id
         is_first = game_id not in self._lineup_state
@@ -72,7 +91,7 @@ class NBAProcessor:
             lineup_event = diff_lineups(game_id, prev_lineup, curr_lineup, snapshot)
             if lineup_event is not None:
                 logger.info("Lineup change: game=%s in=%s out=%s", game_id, lineup_event.players_in, lineup_event.players_out)
-                await self.out_queue.put(lineup_event)
+                await self._emit(lineup_event, snapshot)
 
         self._lineup_state[game_id] = curr_lineup
 
@@ -84,7 +103,7 @@ class NBAProcessor:
             score_event = diff_scores(game_id, prev_scores, curr_scores, snapshot)
             if score_event is not None:
                 logger.info("Score change: game=%s home=%d away=%d", game_id, score_event.home_score, score_event.away_score)
-                await self.out_queue.put(score_event)
+                await self._emit(score_event, snapshot)
 
         self._score_state[game_id] = curr_scores
 
@@ -95,7 +114,7 @@ class NBAProcessor:
         if not is_first and prev_timeouts is not None:
             for evt in diff_timeouts(game_id, prev_timeouts, curr_timeouts, snapshot):
                 logger.info("Timeout: game=%s team=%s", game_id, evt.team_tricode)
-                await self.out_queue.put(evt)
+                await self._emit(evt, snapshot)
 
         self._timeout_state[game_id] = curr_timeouts
 
@@ -106,7 +125,7 @@ class NBAProcessor:
         if not is_first and prev_fouls is not None:
             for evt in diff_fouls(game_id, prev_fouls, curr_fouls, snapshot):
                 logger.info("Foul: game=%s player=%s fouls=%d", game_id, evt.player_name, evt.curr_fouls)
-                await self.out_queue.put(evt)
+                await self._emit(evt, snapshot)
 
         self._foul_state[game_id] = curr_fouls
 
@@ -117,7 +136,7 @@ class NBAProcessor:
         if not is_first and prev_turnovers is not None:
             for evt in diff_turnovers(game_id, prev_turnovers, curr_turnovers, snapshot):
                 logger.info("Turnover: game=%s player=%s", game_id, evt.player_name)
-                await self.out_queue.put(evt)
+                await self._emit(evt, snapshot)
 
         self._turnover_state[game_id] = curr_turnovers
 
@@ -129,7 +148,7 @@ class NBAProcessor:
             period_evt = diff_period(game_id, prev_period, curr_period, snapshot)
             if period_evt is not None:
                 logger.info("Period change: game=%s %d→%d", game_id, period_evt.prev_period, period_evt.curr_period)
-                await self.out_queue.put(period_evt)
+                await self._emit(period_evt, snapshot)
 
         self._period_state[game_id] = curr_period
 
@@ -140,7 +159,7 @@ class NBAProcessor:
         if not is_first and prev_points is not None:
             for evt in diff_player_points(game_id, prev_points, curr_points, snapshot):
                 logger.info("Scoring play: game=%s player=%s +%d", game_id, evt.player_name, evt.score_delta)
-                await self.out_queue.put(evt)
+                await self._emit(evt, snapshot)
 
         self._points_state[game_id] = curr_points
 
@@ -151,7 +170,7 @@ class NBAProcessor:
         if not is_first and prev_roster is not None:
             for evt in diff_substitutions(game_id, prev_roster, curr_roster, prev_lineup, curr_lineup, snapshot):
                 logger.info("Substitution: game=%s %s %s %s", game_id, evt.sub_type, evt.player_name, evt.team_tricode)
-                await self.out_queue.put(evt)
+                await self._emit(evt, snapshot)
 
         self._roster_state[game_id] = curr_roster
 

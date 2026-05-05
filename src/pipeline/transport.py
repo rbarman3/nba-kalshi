@@ -19,11 +19,13 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
-from pipeline.models import RawSnapshot
+from pipeline.api_stats import ApiStatsCollector
+from pipeline.models import PollResult, RawSnapshot
+from pipeline.signal import FeedQualitySignal
 from pipeline.store import SnapshotStore
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,21 @@ class _PollState:
 
 def _hash_payload(payload: dict) -> str:
     return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _parse_cdn_time(payload: dict) -> float | None:
+    """Parse payload.meta.time (e.g. '2026-04-10 20:33:01.066354') to unix ts.
+
+    NBA CDN emits naive UTC strings; treat as UTC. Returns None on missing/malformed.
+    """
+    raw = payload.get("meta", {}).get("time")
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 class NBATransport:
@@ -86,13 +103,39 @@ class NBATransport:
         queue: asyncio.Queue,
         poll_interval_range: tuple[float, float] = (0.6, 1.2),
         store: SnapshotStore | None = None,
+        stats: ApiStatsCollector | None = None,
+        signal: FeedQualitySignal | None = None,
     ) -> None:
         self.game_ids = game_ids
         self.queue = queue
         self.poll_interval_range = poll_interval_range
         self.store = store
+        self.stats = stats
+        self.signal = signal
         self._poll_states: dict[str, _PollState] = {gid: _PollState() for gid in game_ids}
         self.cache: dict[str, RawSnapshot] = {}
+
+    def _emit_stats(
+        self,
+        game_id: str,
+        status_code: int,
+        error_type: str | None,
+        elapsed_ms: float,
+    ) -> None:
+        """Record a poll result to stats collector and quality signal."""
+        if self.stats is None and self.signal is None:
+            return
+        result = PollResult(
+            game_id=game_id,
+            status_code=status_code,
+            error_type=error_type,
+            response_time_ms=elapsed_ms,
+            timestamp=time.time(),
+        )
+        if self.stats is not None:
+            self.stats.record(result)
+        if self.signal is not None:
+            self.signal.on_poll(result)
 
     async def run(self) -> None:
         """Poll all games concurrently forever. Never returns."""
@@ -114,9 +157,13 @@ class NBATransport:
                 return
 
         url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+        t0 = time.time()
         try:
             resp = await client.get(url)
+            elapsed_ms = (time.time() - t0) * 1000
             state.last_polled = time.time()
+
+            self._emit_stats(game_id, resp.status_code, None, elapsed_ms)
 
             if resp.status_code == 403:
                 state.status = GameStatus.NOT_STARTED
@@ -148,11 +195,16 @@ class NBATransport:
                 game_id=game_id,
                 payload=payload,
                 fetched_at=time.time(),
+                cdn_observed_at=_parse_cdn_time(payload),
             )
             self.cache[game_id] = snapshot
             await self.queue.put(snapshot)
             if self.store:
                 await self.store.persist(snapshot)
+            if self.signal is not None:
+                self.signal.on_snapshot(game_id, snapshot.fetched_at)
 
         except Exception as e:
+            elapsed_ms = (time.time() - t0) * 1000
+            self._emit_stats(game_id, -1, type(e).__name__, elapsed_ms)
             logger.error(f"Failed to fetch game {game_id}: {e}")
