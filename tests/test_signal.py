@@ -404,3 +404,64 @@ class TestIsTradeable:
 
     def test_trade_threshold_stricter_than_reliability(self):
         assert TRADE_HEALTH_THRESHOLD > HEALTH_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Latency histograms (api_freshness, generator_lag, market_reaction)
+# ---------------------------------------------------------------------------
+
+class TestLatencyHistograms:
+    def test_on_event_records_generator_lag_and_api_freshness(self):
+        from pipeline.models import ScoringPlayEvent
+        signal = FeedQualitySignal()
+        fetched_at = 1700000000.0
+        cdn_at = fetched_at - 0.4   # 400ms api freshness
+        emitted_at = fetched_at + 0.020   # 20ms generator lag
+
+        event = ScoringPlayEvent(
+            game_id="g1", period=1, clock="PT05M",
+            team_id=1, team_tricode="LAL",
+            player_id="1", player_name="X",
+            prev_points=0, curr_points=2, score_delta=2,
+            home_score=2, away_score=0,
+            observed_at=fetched_at,
+            cdn_observed_at=cdn_at,
+            emitted_at=emitted_at,
+        )
+        signal.on_event(event)
+
+        stats = signal.window_stats("g1")
+        assert stats.generator_lag_p50_ms == pytest.approx(20.0, abs=0.5)
+        assert stats.api_freshness_p50_ms == pytest.approx(400.0, abs=0.5)
+        assert stats.event_sample_count == 1
+
+    def test_on_market_move_records_reaction_latency(self):
+        signal = FeedQualitySignal()
+        for v in [100, 200, 300, 400, 500]:
+            signal.on_market_move("g1", float(v))
+        stats = signal.window_stats("g1")
+        assert stats.market_sample_count == 5
+        assert stats.market_reaction_p50_ms == 300.0
+
+    def test_negative_market_delta_ignored(self):
+        signal = FeedQualitySignal()
+        signal.on_market_move("g1", -50.0)
+        assert signal.window_stats("g1").market_sample_count == 0
+
+    def test_event_without_cdn_timestamp_skips_api_freshness(self):
+        from pipeline.models import ScoringPlayEvent
+        signal = FeedQualitySignal()
+        event = ScoringPlayEvent(
+            game_id="g1", period=1, clock="PT05M",
+            team_id=1, team_tricode="LAL",
+            player_id="1", player_name="X",
+            prev_points=0, curr_points=2, score_delta=2,
+            home_score=2, away_score=0,
+            observed_at=1700000000.0,
+            cdn_observed_at=None,
+            emitted_at=1700000000.05,
+        )
+        signal.on_event(event)
+        stats = signal.window_stats("g1")
+        assert stats.generator_lag_p50_ms > 0
+        assert stats.api_freshness_p50_ms == 0.0

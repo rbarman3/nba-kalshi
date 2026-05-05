@@ -38,6 +38,12 @@ coverage.xml
 kalshi_credentials.json
 nbakey.txt
 demokey.txt
+nba-api-key.txt
+*-api-key.txt
+secrets/
+*.pem
+*.key
+.kalshi/
 
 #Context
 transportandprocess.md

@@ -499,3 +499,22 @@ class TestSignalIntegration:
 
         # Should not raise
         await transport._fetch_one(self.GAME_ID, client)
+
+
+# Tests for CDN timestamp parsing
+class TestParseCdnTime:
+    def test_valid_meta_time(self):
+        from pipeline.transport import _parse_cdn_time
+        ts = _parse_cdn_time({"meta": {"time": "2026-04-10 20:33:01.066354"}})
+        assert ts is not None
+        assert 1.7e9 < ts < 2.0e9
+
+    def test_missing_meta_returns_none(self):
+        from pipeline.transport import _parse_cdn_time
+        assert _parse_cdn_time({}) is None
+        assert _parse_cdn_time({"meta": {}}) is None
+
+    def test_malformed_time_returns_none(self):
+        from pipeline.transport import _parse_cdn_time
+        assert _parse_cdn_time({"meta": {"time": "not-a-date"}}) is None
+

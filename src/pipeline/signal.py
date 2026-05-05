@@ -44,6 +44,21 @@ STALENESS_CEILING_S = 10.0       # freshness → 0 at 10s stale
 LATENCY_CEILING_MS = 2000.0      # SLO_LATENCY_P99_MS
 CONSEC_FAILURE_CEILING = 5       # SLO_MAX_CONSECUTIVE_FAILURES
 
+# Rolling-window caps for latency histograms (per game)
+MAX_LATENCY_SAMPLES = 500
+
+# SLO targets for end-to-end latency (informational; not enforced as gates yet)
+SLO_API_FRESHNESS_P95_MS = 1500.0
+SLO_GENERATOR_LAG_P95_MS = 50.0
+SLO_MARKET_REACTION_P95_MS = 5000.0
+
+
+def _push_capped(buf: list[float], value: float) -> None:
+    """Append to a rolling list, drop oldest if over MAX_LATENCY_SAMPLES."""
+    buf.append(value)
+    if len(buf) > MAX_LATENCY_SAMPLES:
+        del buf[: len(buf) - MAX_LATENCY_SAMPLES]
+
 
 def _compute_percentile(sorted_values: list[float], pct: float) -> float:
     """Index-based percentile on a pre-sorted list. Returns 0.0 if empty."""
@@ -63,6 +78,9 @@ class _GameState:
     consecutive_failures: int = 0
     polls: list[tuple[float, int, float]] = field(default_factory=list)
     # Each entry: (timestamp, status_code, response_time_ms)
+    api_freshness_ms: list[float] = field(default_factory=list)
+    generator_lag_ms: list[float] = field(default_factory=list)
+    market_reaction_ms: list[float] = field(default_factory=list)
 
 
 class FeedQualitySignal:
@@ -111,6 +129,36 @@ class FeedQualitySignal:
             state.gap_start = 0.0
 
         state.last_snapshot_at = fetched_at
+
+    def on_event(self, event) -> None:
+        """Record latency samples derived from an emitted pipeline event.
+
+        Pulls cdn_observed_at, observed_at (= snapshot.fetched_at), and emitted_at
+        off the event. Silently skips events without these fields.
+        """
+        game_id = getattr(event, "game_id", None)
+        if not game_id:
+            return
+        observed_at = getattr(event, "observed_at", 0.0)
+        emitted_at = getattr(event, "emitted_at", 0.0)
+        cdn_observed_at = getattr(event, "cdn_observed_at", None)
+
+        state = self._ensure_state(game_id)
+
+        if emitted_at > 0 and observed_at > 0:
+            lag_ms = max(0.0, (emitted_at - observed_at) * 1000.0)
+            _push_capped(state.generator_lag_ms, lag_ms)
+
+        if cdn_observed_at and observed_at > 0:
+            freshness_ms = max(0.0, (observed_at - cdn_observed_at) * 1000.0)
+            _push_capped(state.api_freshness_ms, freshness_ms)
+
+    def on_market_move(self, game_id: str, delta_ms: float) -> None:
+        """Record observed delta between an NBA event emission and Kalshi market reaction."""
+        if delta_ms < 0:
+            return
+        state = self._ensure_state(game_id)
+        _push_capped(state.market_reaction_ms, float(delta_ms))
 
     # ------------------------------------------------------------------
     # Score components (private)
@@ -212,7 +260,7 @@ class FeedQualitySignal:
 
     def window_stats(self, game_id: str) -> WindowStats:
         """Rolling window stats. Returns zeroed WindowStats for unknown games."""
-        if game_id not in self._states or not self._states[game_id].polls:
+        if game_id not in self._states:
             return WindowStats(
                 success_rate=0.0,
                 latency_p50_ms=0.0,
@@ -221,10 +269,17 @@ class FeedQualitySignal:
                 window_seconds=self._window_seconds,
             )
 
-        polls = self._states[game_id].polls
+        state = self._states[game_id]
+        polls = state.polls
         total = len(polls)
         successes = sum(1 for _, sc, _ in polls if sc == 200)
         latencies = sorted(rt for _, sc, rt in polls if sc == 200)
+
+        api_fresh_sorted = sorted(state.api_freshness_ms)
+        gen_lag_sorted = sorted(state.generator_lag_ms)
+        market_sorted = sorted(state.market_reaction_ms)
+
+        event_count = max(len(state.api_freshness_ms), len(state.generator_lag_ms))
 
         return WindowStats(
             success_rate=successes / total if total > 0 else 0.0,
@@ -232,6 +287,14 @@ class FeedQualitySignal:
             latency_p95_ms=round(_compute_percentile(latencies, 95), 2),
             poll_count=total,
             window_seconds=self._window_seconds,
+            api_freshness_p50_ms=round(_compute_percentile(api_fresh_sorted, 50), 2),
+            api_freshness_p95_ms=round(_compute_percentile(api_fresh_sorted, 95), 2),
+            generator_lag_p50_ms=round(_compute_percentile(gen_lag_sorted, 50), 2),
+            generator_lag_p95_ms=round(_compute_percentile(gen_lag_sorted, 95), 2),
+            market_reaction_p50_ms=round(_compute_percentile(market_sorted, 50), 2),
+            market_reaction_p95_ms=round(_compute_percentile(market_sorted, 95), 2),
+            event_sample_count=event_count,
+            market_sample_count=len(state.market_reaction_ms),
         )
 
     # ------------------------------------------------------------------

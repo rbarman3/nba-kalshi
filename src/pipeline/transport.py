@@ -19,7 +19,7 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -55,6 +55,21 @@ class _PollState:
 
 def _hash_payload(payload: dict) -> str:
     return hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _parse_cdn_time(payload: dict) -> float | None:
+    """Parse payload.meta.time (e.g. '2026-04-10 20:33:01.066354') to unix ts.
+
+    NBA CDN emits naive UTC strings; treat as UTC. Returns None on missing/malformed.
+    """
+    raw = payload.get("meta", {}).get("time")
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 class NBATransport:
@@ -180,6 +195,7 @@ class NBATransport:
                 game_id=game_id,
                 payload=payload,
                 fetched_at=time.time(),
+                cdn_observed_at=_parse_cdn_time(payload),
             )
             self.cache[game_id] = snapshot
             await self.queue.put(snapshot)

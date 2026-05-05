@@ -16,6 +16,7 @@ class RawSnapshot:
     game_id: str
     payload: dict      # Full game dict from NBA CDN boxscore endpoint
     fetched_at: float  # Unix timestamp — used for staleness gate
+    cdn_observed_at: float | None = None  # Parsed from payload.meta.time (CDN-side timestamp)
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ class LineupChangeEvent:
     players_in: frozenset[str]      # personIds now on court
     players_out: frozenset[str]     # personIds now off court
     observed_at: float              # Unix timestamp when change detected
+    cdn_observed_at: float | None = None
+    emitted_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,8 @@ class ScoreChangeEvent:
     period: int                     # Current period
     clock: str                      # ISO 8601 time remaining in period
     observed_at: float              # Unix timestamp when change detected
+    cdn_observed_at: float | None = None
+    emitted_at: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +89,8 @@ class FoulEvent:
     home_score: int
     away_score: int
     observed_at: float
+    cdn_observed_at: float | None = None  # Parsed from snapshot.meta.time
+    emitted_at: float = 0.0               # time.time() at processor emit
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,8 @@ class TimeoutEvent:
     home_score: int
     away_score: int
     observed_at: float
+    cdn_observed_at: float | None = None  # Parsed from snapshot.meta.time
+    emitted_at: float = 0.0               # time.time() at processor emit
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,8 @@ class TurnoverEvent:
     home_score: int
     away_score: int
     observed_at: float
+    cdn_observed_at: float | None = None  # Parsed from snapshot.meta.time
+    emitted_at: float = 0.0               # time.time() at processor emit
 
 
 @dataclass(frozen=True)
@@ -138,6 +149,8 @@ class PeriodEvent:
     away_score: int
     game_status: int                # 1=not started, 2=live, 3=final
     observed_at: float
+    cdn_observed_at: float | None = None  # Parsed from snapshot.meta.time
+    emitted_at: float = 0.0               # time.time() at processor emit
 
 
 @dataclass(frozen=True)
@@ -160,6 +173,8 @@ class ScoringPlayEvent:
     home_score: int
     away_score: int
     observed_at: float
+    cdn_observed_at: float | None = None  # Parsed from snapshot.meta.time
+    emitted_at: float = 0.0               # time.time() at processor emit
 
 
 @dataclass(frozen=True)
@@ -180,6 +195,8 @@ class SubstitutionEvent:
     home_score: int
     away_score: int
     observed_at: float
+    cdn_observed_at: float | None = None  # Parsed from snapshot.meta.time
+    emitted_at: float = 0.0               # time.time() at processor emit
 
 
 @dataclass(frozen=True)
@@ -204,6 +221,15 @@ class WindowStats:
     latency_p95_ms: float
     poll_count: int
     window_seconds: float     # actual window duration
+    # End-to-end latency percentiles (0.0 if no samples).
+    api_freshness_p50_ms: float = 0.0      # fetched_at - cdn_observed_at
+    api_freshness_p95_ms: float = 0.0
+    generator_lag_p50_ms: float = 0.0      # emitted_at - fetched_at
+    generator_lag_p95_ms: float = 0.0
+    market_reaction_p50_ms: float = 0.0    # kalshi_first_move_at - emitted_at
+    market_reaction_p95_ms: float = 0.0
+    event_sample_count: int = 0
+    market_sample_count: int = 0
 
 
 @dataclass(frozen=True)
